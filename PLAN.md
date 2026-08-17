@@ -29,7 +29,8 @@ training vào phạm vi hiện tại.
 1. Copy một bundle hoàn chỉnh và cấu hình `.env`:
    `AIC_ARTIFACT_DIR`, `AIC_CLIP_MODEL_NAME=ViT-B/32`, `AIC_USE_LORA`.
 2. Kiểm tra bundle có `video.index`, `index_metadata.json`, và nếu dùng LoRA
-   thì có `lora_weights.pt` cùng checkpoint family.
+   thì có `lora_weights.pt` với `metadata.clip_model=ViT-B/32` và
+   `metadata.adapter_scope=text_only`.
 3. Kiểm tra từng metadata row có tối thiểu:
    `video_id`, `frame_id` thật, `pts_time`, `keyframe_ordinal`; để refine cần
    thêm `original_video_path` hoặc một cách map chắc chắn sang video gốc.
@@ -42,14 +43,13 @@ keyframe.
 
 ## Phase 1 - Đóng gói retrieval thành dependency cục bộ
 
-Hai repository không thể tự import lẫn nhau. Không merge source; biến
-`model_searching` thành Python package có tên riêng, ví dụ
+Không merge source; biến `model_searching` thành Python package có tên riêng:
 `aic-model-searching` / `aic_model_searching`.
 
-1. Thêm `pyproject.toml` và public import tối thiểu cho
-   `search_clip_queries`, các result dataclass, và exception retrieval.
+1. Public import gồm `search_clip_queries`, các result dataclass, và exception
+   retrieval.
 2. Không dùng `from backend...` từ repo query: tên `backend` quá chung và có
-   thể đụng package của repo query. Public API phải dùng namespace riêng:
+   thể đụng package của repo query. Public API dùng namespace riêng:
 
    ```python
    from aic_model_searching import search_clip_queries
@@ -118,7 +118,7 @@ keyframe ở video khác hoặc cách xa nhau vẫn là region độc lập.
 
 **Thực hiện ở `model_searching`. Đây là phần code mới cần viết.**
 
-1. Thêm `backend/refinement.py` với public API dự kiến:
+1. Thêm `aic_model_searching/refinement.py` với public API dự kiến:
 
    ```python
    refine_regions(regions, weighted_clip_queries) -> list[RefinedFrame]

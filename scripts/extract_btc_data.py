@@ -5,7 +5,6 @@ Tự động xử lý mapping tên thư mục gốc trong zip sang thư mục đ
   - keyframes/        → data/keyframes/
   - map-keyframes/    → data/map-keyframes/
   - media-info/       → data/media-info/
-  - objects/          → data/objects/
 """
 import sys
 import shutil
@@ -20,8 +19,6 @@ PREFIX_MAP = {
     "map-keyframes":    "map-keyframes",
     "mapkeyframes":     "map-keyframes",
     "media-info":       "media-info",
-    "objects":          "objects",
-    "object":           "objects",
     "clip-features":    "clip-features",
     "clip-features-32": "clip-features",
     "clipfeatures":     "clip-features",
@@ -31,7 +28,7 @@ PREFIX_MAP = {
 
 sys.path.insert(0, str(ROOT_DIR))
 
-from backend.config import DATA_ROOT, ZIP_DIR  # noqa: E402
+from aic_model_searching.config import DATA_ROOT, ZIP_DIR  # noqa: E402
 
 
 def _detect_prefix(zip_path: Path) -> tuple[str, str, bool]:

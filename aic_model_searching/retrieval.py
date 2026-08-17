@@ -8,19 +8,20 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from functools import lru_cache
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
 import faiss
 import numpy as np
 
-from backend.config import (
+from aic_model_searching.config import (
     FAISS_INDEX_PATH,
     FAISS_METADATA_PATH,
     SCENE_FAISS_INDEX_PATH,
     SCENE_METADATA_PATH,
 )
-from backend.embedding.clip_encoder import encode_text
+from aic_model_searching.embedding.clip_encoder import encode_text
 
 
 class RetrievalBundleError(RuntimeError):
@@ -57,6 +58,27 @@ def _load_json_list(path: Path, label: str) -> list[dict[str, Any]]:
     return value
 
 
+def _validate_keyframe_metadata(rows: list[dict[str, Any]], path: Path) -> None:
+    """Reject keyframe artifacts that cannot produce valid AIC candidates."""
+    for row_index, item in enumerate(rows):
+        for field in ("video_id", "frame_id", "pts_time"):
+            value = item.get(field)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                raise RetrievalBundleError(
+                    f"keyframe metadata row {row_index} has missing {field!r}: {path}"
+                )
+        try:
+            pts_time = float(item["pts_time"])
+        except (TypeError, ValueError) as exc:
+            raise RetrievalBundleError(
+                f"keyframe metadata row {row_index} has invalid 'pts_time': {path}"
+            ) from exc
+        if not isfinite(pts_time) or pts_time < 0:
+            raise RetrievalBundleError(
+                f"keyframe metadata row {row_index} has invalid 'pts_time': {path}"
+            )
+
+
 class LocalClipRetriever:
     """Loads one compatible CLIP/FAISS artifact bundle and searches it."""
 
@@ -85,6 +107,7 @@ class LocalClipRetriever:
                 "Keyframe index/metadata mismatch: "
                 f"{self.keyframe_index.ntotal} vectors vs {len(self.metadata)} rows"
             )
+        _validate_keyframe_metadata(self.metadata, self.metadata_path)
 
         has_scene_index = self.scene_index_path.is_file()
         has_scene_metadata = self.scene_metadata_path.is_file()

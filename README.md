@@ -30,9 +30,9 @@ artifact-bundle/
   scene_metadata.json          # optional
 ```
 
-`video.index` and `index_metadata.json` are mandatory. The metadata must map
-each indexed keyframe to the real submission `frame_id`; keyframe filename or
-ordinal is not a submission frame ID.
+`video.index` and `index_metadata.json` are mandatory. Every metadata row must
+have `video_id`, the real submission `frame_id`, and non-negative `pts_time`.
+Keyframe filename or ordinal is not a submission frame ID.
 
 Copy `.env.example` to `.env` and configure, for example:
 
@@ -43,15 +43,16 @@ AIC_USE_LORA=true
 AIC_DEVICE=cuda
 ```
 
-This codebase's LoRA checkpoint format adapts only CLIP's **text encoder**.
-It is compatible with raw BTC `ViT-B/32` image features. A checkpoint that
-also modified the visual encoder needs a matching custom loader and a
-re-indexed `video.index`.
+This codebase accepts only a LoRA checkpoint that adapts CLIP's **text
+encoder**. Its `metadata` must declare `clip_model: "ViT-B/32"` and
+`adapter_scope: "text_only"`; it is then compatible with raw BTC `ViT-B/32`
+image features. A visual-side LoRA is rejected because it requires a matching
+re-encoded `video.index`.
 
 ## Call from Python
 
 ```python
-from backend.retrieval import search_clip_queries
+from aic_model_searching import search_clip_queries
 
 results = search_clip_queries(
     ["a presenter standing on a stage", "a red car entering a stage"],
@@ -65,15 +66,14 @@ for result in results:
 Each `QueryRetrievalResult` keeps the query index and its own ranked results,
 so the caller can apply its task-specific RRF, Q&A, or TRAKE logic safely.
 
-## Optional offline tools
+## Optional offline index-building tools
 
-Install them only when building or enriching artifacts:
+Install them only when constructing local visual artifacts:
 
 ```bash
-pip install -r requirements-offline.txt
+python -m pip install -e ".[offline]"
 python scripts/extract_btc_data.py
-python scripts/import_btc_data.py --with-transcript  # optional ASR
-python -m backend.preprocessing.generate_captions    # optional captions
+python scripts/import_btc_data.py
 python scripts/build_index_features.py
 ```
 
@@ -87,8 +87,22 @@ The repository deliberately contains no training loop. Training belongs to the
 teammate's training repository; runtime only loads the resulting LoRA
 checkpoint when configured.
 
-The next capabilities proposed in the research PDF - OCR/ASR/caption indexes,
-dense raw-video frame refinement, Q&A evidence answering, TRAKE DP, local
-evaluation, and CSV export - are not implemented here yet. The remaining
-offline metadata, transcription, and caption tools are retained because they
-directly support those future additions.
+This image-only component has no OCR, ASR, caption model, or text index. Dense
+raw-video frame refinement is the next visual-only capability; Q&A answering,
+TRAKE DP, local evaluation, and CSV export belong to the calling repository.
+
+## Install
+
+Install this repository into the virtual environment of the calling repository:
+
+```powershell
+python -m pip install -e D:\VideoQuery\model_searching
+```
+
+Use `-e ".[dev]"` while developing this repository, or `-e ".[offline]"`
+when building visual artifacts locally. The calling repository imports only the
+public API:
+
+```python
+from aic_model_searching import search_clip_queries
+```

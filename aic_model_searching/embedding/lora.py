@@ -9,6 +9,8 @@ import torch.nn as nn
 
 logger = logging.getLogger(__name__)
 
+_TEXT_ONLY_SCOPE = "text_only"
+
 
 class LoRALinear(nn.Module):
     """Frozen linear layer plus a low-rank adapter."""
@@ -66,14 +68,31 @@ def inject_lora(
         setattr(parent, parts[-1], LoRALinear(module, rank=rank, alpha=alpha))
         injected_count += 1
 
+    if injected_count == 0:
+        raise ValueError("No supported text-encoder linear modules found for LoRA injection")
+
     for param_name, parameter in model.named_parameters():
         if "lora_" not in param_name:
             parameter.requires_grad_(False)
     return injected_count
 
 
+def _validate_checkpoint_metadata(metadata: object, path: Path) -> dict:
+    if not isinstance(metadata, dict):
+        raise ValueError(f"LoRA checkpoint metadata must be an object: {path}")
+    clip_model = metadata.get("clip_model")
+    if not isinstance(clip_model, str) or not clip_model.strip():
+        raise ValueError(f"LoRA checkpoint metadata.clip_model is required: {path}")
+    if metadata.get("adapter_scope") != _TEXT_ONLY_SCOPE:
+        raise ValueError(
+            "LoRA checkpoint metadata.adapter_scope must be 'text_only': "
+            f"{path}"
+        )
+    return metadata
+
+
 def load_lora_weights(model: nn.Module, path: Path) -> dict:
-    """Load a complete text-only LoRA checkpoint and return its metadata."""
+    """Load one compatible text-only LoRA checkpoint and return its metadata."""
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"LoRA checkpoint not found: {path}")
@@ -87,11 +106,16 @@ def load_lora_weights(model: nn.Module, path: Path) -> dict:
         lora_state = checkpoint["lora_state_dict"]
     except KeyError as exc:
         raise ValueError(f"LoRA checkpoint is missing {exc.args[0]!r}: {path}") from exc
+    if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
+        raise ValueError(f"LoRA checkpoint rank must be a positive integer: {path}")
+    if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or alpha <= 0:
+        raise ValueError(f"LoRA checkpoint alpha must be positive: {path}")
     if not isinstance(lora_state, dict):
         raise ValueError(f"Invalid LoRA checkpoint state: {path}")
+    metadata = _validate_checkpoint_metadata(checkpoint.get("metadata"), path)
 
     if not any(isinstance(module, LoRALinear) for module in model.modules()):
-        inject_lora(model, rank=rank, alpha=alpha)
+        inject_lora(model, rank=rank, alpha=float(alpha))
 
     expected_keys = {
         key
@@ -112,8 +136,5 @@ def load_lora_weights(model: nn.Module, path: Path) -> dict:
             module.lora_A.data.copy_(lora_state[f"{name}.lora_A"].to(module.lora_A))
             module.lora_B.data.copy_(lora_state[f"{name}.lora_B"].to(module.lora_B))
 
-    metadata = checkpoint.get("metadata", {})
-    if not isinstance(metadata, dict):
-        raise ValueError(f"LoRA checkpoint metadata must be an object: {path}")
     logger.info("Loaded text-only LoRA checkpoint from %s", path)
     return metadata

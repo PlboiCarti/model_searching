@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aic-model-searching"
+version = "0.1.0"
+description = "Local image-only CLIP and FAISS retrieval for AIC 2026"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "ftfy",
+    "regex",
+    "clip @ git+https://github.com/openai/CLIP.git",
+    "faiss-cpu>=1.7.4",
+    "numpy<2",
+    "Pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+offline = ["tqdm", "opencv-python-headless"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["aic_model_searching*"]

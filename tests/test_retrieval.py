@@ -5,7 +5,7 @@ import pytest
 
 faiss = pytest.importorskip("faiss")
 
-from backend.retrieval import LocalClipRetriever
+from aic_model_searching.retrieval import LocalClipRetriever
 
 
 def _write_bundle(tmp_path):
@@ -31,7 +31,7 @@ def _write_bundle(tmp_path):
 def test_search_many_preserves_query_provenance(tmp_path, monkeypatch):
     index_path, metadata_path = _write_bundle(tmp_path)
     retriever = LocalClipRetriever(index_path=index_path, metadata_path=metadata_path)
-    monkeypatch.setattr("backend.retrieval.encode_text", lambda _query: np.array([1.0, 0.0]))
+    monkeypatch.setattr("aic_model_searching.retrieval.encode_text", lambda _query: np.array([1.0, 0.0]))
 
     results = retriever.search_many(["a presenter", "a red car"], top_k=1)
 
@@ -45,4 +45,18 @@ def test_bundle_rejects_mismatched_metadata_length(tmp_path):
     metadata_path.write_text("[]", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="index/metadata mismatch"):
+        LocalClipRetriever(index_path=index_path, metadata_path=metadata_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("video_id", ""), ("frame_id", None), ("pts_time", "not-a-timestamp")],
+)
+def test_bundle_rejects_invalid_candidate_metadata(tmp_path, field, value):
+    index_path, metadata_path = _write_bundle(tmp_path)
+    rows = json.loads(metadata_path.read_text(encoding="utf-8"))
+    rows[0][field] = value
+    metadata_path.write_text(json.dumps(rows), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=field):
         LocalClipRetriever(index_path=index_path, metadata_path=metadata_path)

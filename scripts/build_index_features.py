@@ -22,7 +22,7 @@ from tqdm import tqdm
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from backend.config import (  # noqa: E402
+from aic_model_searching.config import (  # noqa: E402
     BTC_CLIP_FEATURES_DIR,
     FAISS_INDEX_PATH,
     FAISS_METADATA_PATH,
@@ -282,8 +282,6 @@ def _new_scene(video_id: str, scene_index: int, members: list[int], items: list[
         "end_frame": max(int(item.get("frame_id", 0)) for item in scene_items),
         "frame_id": int(scene_items[len(scene_items) // 2].get("frame_id", 0)),
         "clip_id": scene_id,
-        "text": "",
-        "object_tags": scene_items[0].get("object_tags", ""),
         "keyframe_indices": members,
         "_vector": scene_vec.astype("float32"),
     }

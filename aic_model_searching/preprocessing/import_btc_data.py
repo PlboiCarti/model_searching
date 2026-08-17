@@ -30,7 +30,7 @@ from typing import Any
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from backend.config import (  # noqa: E402
+from aic_model_searching.config import (  # noqa: E402
     BTC_MAP_KEYFRAMES_DIR,
     BTC_MEDIA_INFO_DIR,
     INDEX_DIR,
@@ -343,51 +343,6 @@ def _lookup_frame(
 
 
 # ---------------------------------------------------------------------------
-# Dynamic transcript assignment by PTS window
-# ---------------------------------------------------------------------------
-
-def assign_text_by_pts(video_items: list[dict], segments: list[dict]) -> None:
-    """Gán transcript cho từng keyframe dựa trên window thời gian động quanh pts_time.
-
-    Window được tính tự động dựa trên khoảng cách tới keyframe lân cận để tránh:
-    - Bỏ sót transcript lời nói gần đó khi keyframe thưa.
-    - Chồng lấn transcript giữa các keyframe quá gần nhau.
-    """
-    if not video_items or not segments:
-        return
-
-    sorted_items = sorted(video_items, key=lambda x: x.get("pts_time", 0.0))
-    n_items = len(sorted_items)
-
-    for i, item in enumerate(sorted_items):
-        pts = item["pts_time"]
-
-        prev_pts = sorted_items[i - 1]["pts_time"] if i > 0 else None
-        next_pts = sorted_items[i + 1]["pts_time"] if i < n_items - 1 else None
-
-        gaps = []
-        if prev_pts is not None:
-            gaps.append(abs(pts - prev_pts))
-        if next_pts is not None:
-            gaps.append(abs(next_pts - pts))
-
-        if gaps:
-            half_gap = min(gaps) / 2.0
-            window = max(0.5, min(2.0, half_gap))
-        else:
-            window = 1.0
-
-        overlapping = [
-            seg["text"].strip()
-            for seg in segments
-            if seg.get("text") and seg["start"] <= pts + window and seg["end"] >= pts - window
-        ]
-
-        unique_texts = list(dict.fromkeys(overlapping))
-        item["text"] = " ".join(unique_texts).strip()
-
-
-# ---------------------------------------------------------------------------
 # Cache / Idempotency helpers
 # ---------------------------------------------------------------------------
 
@@ -427,7 +382,6 @@ def _load_existing_video_metadata(video_id: str) -> list[dict]:
 
 def build_btc_metadata(
     limit_videos: int = 0,
-    with_transcript: bool = False,
     force: bool = False,
 ) -> None:
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
@@ -496,23 +450,10 @@ def build_btc_metadata(
                 "fps": round(item_fps, 3),
                 "pts_time": round(pts_time, 6),
                 "frame_source": frame_info.get("source", "unknown"),
-                "text": "",
-                "object_tags": "",
                 "scene_id": "",
                 "scene_rank": 0,
             }
             video_items.append(item)
-
-        if with_transcript and video_path_str:
-            try:
-                from backend.preprocessing.transcribe import transcribe_video
-
-                segments = transcribe_video(Path(video_path_str))
-                assign_text_by_pts(video_items, segments)
-            except Exception as exc:
-                logger.warning("Could not transcribe %s: %s", video_id, exc)
-        elif with_transcript:
-            logger.debug("[%s] no source video found for transcription, skipping.", video_id)
 
         with open(VIDEO_METADATA_DIR / f"{video_id}.jsonl", "w", encoding="utf-8") as fh:
             for item in video_items:
@@ -546,11 +487,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Single Entrypoint: Import BTC AIC keyframes & metadata")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of videos to import (0=all)")
     parser.add_argument(
-        "--with-transcript",
-        action="store_true",
-        help="Transcribe source videos using Whisper and assign text per keyframe",
-    )
-    parser.add_argument(
         "--force",
         action="store_true",
         help="Force overwrite existing metadata JSONL files even if already generated",
@@ -558,6 +494,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     build_btc_metadata(
         limit_videos=args.limit,
-        with_transcript=args.with_transcript,
         force=args.force,
     )

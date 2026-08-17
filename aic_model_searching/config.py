@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def _is_project_root(path: Path) -> bool:
-    return (path / "requirements.txt").is_file() and (path / "backend").is_dir()
+    return (path / "pyproject.toml").is_file() and (path / "aic_model_searching").is_dir()
 
 
 def _discover_project_root() -> Path:
@@ -71,20 +71,14 @@ SCENE_METADATA_PATH = _resolve_env_path("AIC_SCENE_METADATA_PATH", ARTIFACT_DIR 
 # LoRA Fine-tune
 LORA_WEIGHTS_PATH = _resolve_env_path("AIC_LORA_WEIGHTS_PATH", ARTIFACT_DIR / "lora_weights.pt")
 USE_LORA = os.getenv("AIC_USE_LORA", os.getenv("USE_LORA", "auto")).lower()
+if USE_LORA not in {"auto", "true", "false"}:
+    raise ValueError("AIC_USE_LORA must be one of: auto, true, false")
 
 # BTC Data Directories
 KEYFRAMES_DIR = DATA_ROOT / "keyframes"
 BTC_MEDIA_INFO_DIR = DATA_ROOT / "media-info"
 BTC_MAP_KEYFRAMES_DIR = DATA_ROOT / "map-keyframes"
-BTC_OBJECTS_DIR = DATA_ROOT / "objects"
 BTC_CLIP_FEATURES_DIR = DATA_ROOT / "clip-features"
-
-# Preprocessing / Whisper Transcribe
-WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
-WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
-WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "vi")
-WHISPER_TASK = os.getenv("WHISPER_TASK", "transcribe")
 
 # Embedding / CLIP Model
 CLIP_MODEL_NAME = os.getenv("AIC_CLIP_MODEL_NAME", os.getenv("CLIP_MODEL_NAME", "ViT-B/32"))

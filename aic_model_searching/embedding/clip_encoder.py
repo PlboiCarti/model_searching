@@ -6,7 +6,7 @@ from typing import Iterable, Optional
 import numpy as np
 import torch
 
-from backend.config import CLIP_MODEL_NAME, DEVICE, KEYFRAME_POSITIONS, LORA_WEIGHTS_PATH, USE_LORA
+from aic_model_searching.config import CLIP_MODEL_NAME, DEVICE, KEYFRAME_POSITIONS, LORA_WEIGHTS_PATH, USE_LORA
 
 
 @lru_cache(maxsize=1)
@@ -21,11 +21,11 @@ def _load_clip():
     if USE_LORA == "true" and not LORA_WEIGHTS_PATH.is_file():
         raise FileNotFoundError(f"Configured LoRA checkpoint not found: {LORA_WEIGHTS_PATH}")
     if should_use_lora and LORA_WEIGHTS_PATH.is_file():
-        from backend.training.lora import load_lora_weights
+        from aic_model_searching.embedding.lora import load_lora_weights
 
         metadata = load_lora_weights(model, LORA_WEIGHTS_PATH)
-        checkpoint_model = metadata.get("clip_model")
-        if checkpoint_model and checkpoint_model != CLIP_MODEL_NAME:
+        checkpoint_model = metadata["clip_model"].strip()
+        if checkpoint_model != CLIP_MODEL_NAME:
             raise ValueError(
                 "LoRA checkpoint/model mismatch: "
                 f"checkpoint={checkpoint_model}, configured={CLIP_MODEL_NAME}"

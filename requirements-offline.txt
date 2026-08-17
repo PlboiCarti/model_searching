@@ -1,6 +1,0 @@
-# Optional tooling to construct/extend offline artifacts from BTC data.
--r requirements.txt
-tqdm
-opencv-python-headless
-faster-whisper>=1.0.0
-transformers>=4.42.0

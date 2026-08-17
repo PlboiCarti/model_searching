@@ -18,8 +18,8 @@ from PIL import Image
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from backend.config import BTC_CLIP_FEATURES_DIR, DEVICE, KEYFRAMES_DIR
-from backend.embedding.clip_encoder import _load_clip, _normalize
+from aic_model_searching.config import BTC_CLIP_FEATURES_DIR, DEVICE, KEYFRAMES_DIR
+from aic_model_searching.embedding.clip_encoder import _load_clip, _normalize
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
