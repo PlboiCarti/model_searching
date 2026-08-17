@@ -26,7 +26,11 @@ def main() -> None:
     parser.add_argument("--force-import", action="store_true", help="Regenerate per-video metadata JSONL")
     parser.add_argument("--with-transcript", action="store_true", help="Run Whisper transcript assignment during import")
     parser.add_argument("--translate-titles", action="store_true", help="Translate video titles during import")
-    parser.add_argument("--captions", action="store_true", help="Generate BLIP-2 captions before training/indexing")
+    parser.add_argument("--captions", action="store_true", help="Generate visual captions before training/indexing")
+    parser.add_argument("--caption-model", default="Salesforce/blip2-opt-2.7b", help="Caption model name")
+    parser.add_argument("--caption-prompt", default="aic", choices=["aic", "dense", "short"], help="Caption prompt preset")
+    parser.add_argument("--caption-batch-size", type=int, default=1, help="Caption inference batch size")
+    parser.add_argument("--force-captions", action="store_true", help="Regenerate existing captions")
     parser.add_argument("--train-lora", action="store_true", help="Train LoRA CLIP before indexing")
     parser.add_argument("--epochs", type=int, default=3, help="LoRA epochs")
     parser.add_argument("--batch-size", type=int, default=32, help="Training/caption batch size where supported")
@@ -45,14 +49,21 @@ def main() -> None:
     _run(import_cmd)
 
     if args.captions:
-        _run([
+        caption_cmd = [
             "-m",
             "backend.preprocessing.generate_captions",
             "--batch-size",
-            str(args.batch_size),
+            str(args.caption_batch_size),
             "--limit",
             str(args.limit),
-        ])
+            "--model-name",
+            args.caption_model,
+            "--prompt",
+            args.caption_prompt,
+        ]
+        if args.force_captions:
+            caption_cmd.append("--force")
+        _run(caption_cmd)
 
     if args.train_lora:
         _run([

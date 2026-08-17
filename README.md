@@ -54,6 +54,12 @@ python -m backend.preprocessing.generate_captions
 python scripts/train_lora_clip.py --epochs 3 --batch-size 32 --num-workers 4
 ```
 
+Caption smoke test before a full run:
+
+```bash
+python -m backend.preprocessing.generate_captions --limit 100 --batch-size 1 --prompt aic
+```
+
 ## Batch Runner
 
 `pipeline_batch_run.py` now delegates to the canonical entrypoints above.

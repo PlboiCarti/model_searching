@@ -1,163 +1,249 @@
-"""
-generate_captions.py
-Trích xuất mô tả hình ảnh (Visual Captioning) từ Keyframe dùng BLIP-2.
-Kết quả được lưu vào trường 'caption' trong file metadata JSONL — TÁCH BIỆT
-khỏi trường 'text' (transcript lời nói), vì đây là 2 nguồn dữ liệu train khác
-nhau: 'caption' mô tả NỘI DUNG HÌNH ẢNH (khớp với văn phong đề thi AIC),
-còn 'text' là lời thoại nói ra trong video (chỉ phù hợp cho dạng Q&A).
+"""Generate visual captions for keyframes and write them back to metadata.
+
+The caption field is used as the primary text signal for LoRA CLIP training
+when transcripts are unavailable. Captions are intentionally visual: people,
+clothing, actions, setting, objects, and visible text.
 """
 import argparse
 import json
 import logging
 from pathlib import Path
+from typing import Iterable
 
 import torch
 from PIL import Image
-from transformers import Blip2ForConditionalGeneration, Blip2Processor
 
-from backend.config import DEVICE, INDEX_DIR, METADATA_PATH, VIDEO_METADATA_DIR, resolve_path
+from backend.config import DEVICE, METADATA_PATH, VIDEO_METADATA_DIR, resolve_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
+PROMPTS = {
+    "aic": (
+        "Describe this video keyframe for visual search. Mention people, clothing colors, "
+        "actions, scene location, important objects, vehicle types, signs or readable text, "
+        "and the overall event. Use one concise English sentence."
+    ),
+    "dense": (
+        "Describe the image in detail for image retrieval. Include visible people, clothing, "
+        "actions, objects, background, location, colors, and any text in the image."
+    ),
+    "short": "A concise description of the image:",
+}
+
+
+def _read_metadata() -> list[dict]:
+    if not METADATA_PATH.exists():
+        logger.error("%s not found. Run scripts/import_btc_data.py first.", METADATA_PATH)
+        return []
+
+    rows = []
+    with open(METADATA_PATH, encoding="utf-8") as fh:
+        for line_num, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                logger.warning("Skipping invalid metadata line %d: %s", line_num, exc)
+    return rows
+
+
 def _flush_to_disk(items: list[dict]) -> None:
-    """Ghi metadata tổng hợp + đồng bộ lại file theo từng video."""
-    with open(METADATA_PATH, "w", encoding="utf-8") as f:
+    METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    VIDEO_METADATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    with open(METADATA_PATH, "w", encoding="utf-8") as fh:
         for item in items:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     by_video: dict[str, list[dict]] = {}
     for item in items:
         by_video.setdefault(item["video_id"], []).append(item)
+
     for video_id, video_items in by_video.items():
-        with open(VIDEO_METADATA_DIR / f"{video_id}.jsonl", "w", encoding="utf-8") as f:
+        with open(VIDEO_METADATA_DIR / f"{video_id}.jsonl", "w", encoding="utf-8") as fh:
             for item in video_items:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+                fh.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
-def generate_keyframe_captions(batch_size: int = 16, save_every: int = 10, limit: int = 0) -> None:
-    """Quét metadata.jsonl, sinh caption cho các keyframe chưa có trường 'caption'.
+def _caption_is_usable(item: dict, min_words: int) -> bool:
+    caption = str(item.get("caption") or "").strip()
+    return len(caption.split()) >= min_words
 
-    Args:
-        batch_size: số ảnh xử lý cùng lúc trong 1 lần inference BLIP-2.
-        save_every: sau mỗi bao nhiêu batch thì flush kết quả ra đĩa (chống
-            mất tiến độ nếu crash/OOM giữa chừng — BLIP-2 khá nặng).
-        limit: giới hạn số keyframe xử lý, để test nhanh trước khi chạy full
-            dataset (0 = không giới hạn).
-    """
-    if not METADATA_PATH.exists():
-        logger.error("Không tìm thấy %s. Hãy chạy import_btc_data trước.", METADATA_PATH)
-        return
 
-    # ── Đọc và chuẩn bị metadata TRƯỚC khi nạp model ──────────────────────
-    # Mục đích: tránh chiếm RAM/VRAM nặng (BLIP-2 ~5-10GB) nếu không có
-    # keyframe nào cần sinh caption.
-    items = []
-    with open(METADATA_PATH, encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                items.append(json.loads(line))
+def _pending_indices(items: list[dict], force: bool, min_words: int, limit: int) -> list[int]:
+    pending = []
+    for idx, item in enumerate(items):
+        if not force and _caption_is_usable(item, min_words=min_words):
+            continue
+        if not resolve_path(item.get("path", "")).exists():
+            continue
+        pending.append(idx)
+        if limit > 0 and len(pending) >= limit:
+            break
+    return pending
 
-    if limit > 0:
-        items = items[:limit]
-        logger.info("Giới hạn xử lý %d keyframe đầu tiên (chế độ test).", limit)
 
-    # Đếm số keyframe thực sự cần xử lý (chưa có caption hoặc caption quá ngắn)
-    pending = [
-        item for item in items
-        if not (item.get("caption") and len(item["caption"].strip()) >= 5)
-    ]
-    if not pending:
-        logger.info("Tất cả %d keyframe đã có caption hợp lệ. Không cần chạy BLIP-2.", len(items))
-        return
+def _load_images(items: list[dict], indices: Iterable[int]) -> tuple[list[Image.Image], list[int]]:
+    images = []
+    loaded_indices = []
 
-    logger.info(
-        "Cần sinh caption cho %d/%d keyframe. Đang nạp mô hình BLIP-2...",
-        len(pending), len(items),
-    )
+    for idx in indices:
+        img_path = resolve_path(items[idx].get("path", ""))
+        try:
+            with Image.open(img_path) as fh:
+                images.append(fh.convert("RGB"))
+            loaded_indices.append(idx)
+        except Exception as exc:
+            logger.warning("Could not read image %s: %s", img_path, exc)
 
-    # ── Nạp model CHỈ KHI có việc cần làm ─────────────────────────────────
-    processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
-    model = Blip2ForConditionalGeneration.from_pretrained(
-        "Salesforce/blip2-opt-2.7b",
-        torch_dtype=torch.float16 if str(DEVICE).startswith("cuda") else torch.float32,
-    ).to(DEVICE)
+    return images, loaded_indices
+
+
+def _resolve_model_type(model_name: str, model_type: str) -> str:
+    if model_type != "auto":
+        return model_type
+    if "blip2" in model_name.lower():
+        return "blip2"
+    return "blip"
+
+
+def _load_caption_model(model_name: str, model_type: str):
+    model_type = _resolve_model_type(model_name, model_type)
+    dtype = torch.float16 if str(DEVICE).startswith("cuda") else torch.float32
+
+    if model_type == "blip2":
+        from transformers import Blip2ForConditionalGeneration, Blip2Processor
+
+        processor = Blip2Processor.from_pretrained(model_name)
+        model = Blip2ForConditionalGeneration.from_pretrained(model_name, torch_dtype=dtype)
+    elif model_type == "blip":
+        from transformers import BlipForConditionalGeneration, BlipProcessor
+
+        processor = BlipProcessor.from_pretrained(model_name)
+        model = BlipForConditionalGeneration.from_pretrained(model_name, torch_dtype=dtype)
+    else:
+        raise ValueError(f"Unsupported model type: {model_type}")
+
+    model = model.to(DEVICE)
     model.eval()
+    return model, processor, model_type
+
+
+def _clean_caption(text: str, prompt: str) -> str:
+    text = " ".join(str(text or "").replace("\n", " ").split())
+    if not text:
+        return ""
+
+    normalized_prompt = " ".join(prompt.split()).strip()
+    if normalized_prompt and text.lower().startswith(normalized_prompt.lower()):
+        text = text[len(normalized_prompt):].strip(" :-")
+
+    return text.strip()
+
+
+def generate_keyframe_captions(
+    batch_size: int = 4,
+    save_every: int = 10,
+    limit: int = 0,
+    force: bool = False,
+    min_words: int = 5,
+    model_name: str = "Salesforce/blip2-opt-2.7b",
+    model_type: str = "auto",
+    prompt_name: str = "aic",
+    max_new_tokens: int = 80,
+    num_beams: int = 5,
+) -> None:
+    items = _read_metadata()
+    if not items:
+        return
+
+    prompt = PROMPTS[prompt_name]
+    pending = _pending_indices(items, force=force, min_words=min_words, limit=limit)
+    if not pending:
+        logger.info("All %d keyframes already have usable captions.", len(items))
+        return
+
+    logger.info("Captioning %d/%d keyframes with %s on %s.", len(pending), len(items), model_name, DEVICE)
+    model, processor, resolved_model_type = _load_caption_model(model_name, model_type)
 
     updated_count = 0
     batches_since_save = 0
 
-    for i in range(0, len(items), batch_size):
-        batch = items[i : i + batch_size]
-        images_to_process = []
-        indices_to_update = []
-
-        for idx, item in enumerate(batch):
-            # Nếu đã có caption hợp lệ thì bỏ qua (cơ chế cache)
-            if item.get("caption") and len(item["caption"].strip()) >= 5:
-                continue
-
-            img_path = resolve_path(item.get("path", ""))
-            if img_path.exists():
-                try:
-                    with Image.open(img_path) as fh:
-                        img = fh.convert("RGB")
-                    images_to_process.append(img)
-                    indices_to_update.append(idx)
-                except Exception as e:
-                    logger.warning("Không thể đọc ảnh %s: %s", img_path, e)
-
-        if not images_to_process:
+    for start in range(0, len(pending), batch_size):
+        batch_indices = pending[start : start + batch_size]
+        images, loaded_indices = _load_images(items, batch_indices)
+        if not images:
             continue
 
-        # Inference batch với Prompt định hướng
-        CAPTION_PROMPT = (
-            "Describe this image in detail, focusing on: "
-            "people and their clothing colors, actions being performed, "
-            "the location or setting, and notable objects visible."
-        )
-        prompts = [CAPTION_PROMPT] * len(images_to_process)
         inputs = processor(
-            images=images_to_process,
-            text=prompts,
+            images=images,
+            text=[prompt] * len(images),
             return_tensors="pt",
             padding=True,
         ).to(DEVICE)
+
         with torch.inference_mode():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=60,
-                num_beams=4,
-                length_penalty=1.2,
-                repetition_penalty=1.3,
+                max_new_tokens=max_new_tokens,
+                num_beams=num_beams,
+                length_penalty=1.1,
+                repetition_penalty=1.2,
             )
             generated_texts = processor.batch_decode(generated_ids, skip_special_tokens=True)
 
-        for batch_idx, caption_text in zip(indices_to_update, generated_texts):
-            clean_caption = caption_text.strip()
-            batch[batch_idx]["caption"] = clean_caption
+        for idx, raw_caption in zip(loaded_indices, generated_texts):
+            caption = _clean_caption(raw_caption, prompt)
+            if len(caption.split()) < min_words:
+                logger.debug("Skipping weak caption for %s: %r", items[idx].get("path"), caption)
+                continue
+
+            items[idx]["caption"] = caption
+            items[idx]["caption_model"] = model_name
+            items[idx]["caption_model_type"] = resolved_model_type
+            items[idx]["caption_prompt"] = prompt_name
+            items[idx]["caption_word_count"] = len(caption.split())
             updated_count += 1
 
         batches_since_save += 1
-        logger.info("Đã sinh caption cho %d/%d keyframe...", i + len(batch), len(items))
+        logger.info("Captioned %d/%d pending keyframes.", min(start + batch_size, len(pending)), len(pending))
 
-        # Flush định kỳ ra đĩa để không mất tiến độ nếu crash giữa chừng
         if batches_since_save >= save_every:
             _flush_to_disk(items)
             batches_since_save = 0
-            logger.info("Đã lưu checkpoint tạm thời.")
+            logger.info("Saved caption checkpoint to %s.", METADATA_PATH)
 
-    # Ghi lần cuối + đồng bộ lại xuống từng file theo video
     _flush_to_disk(items)
-
-    logger.info("Hoàn tất! Đã cập nhật caption cho %d keyframe vào %s.", updated_count, METADATA_PATH)
+    logger.info("Done. Updated %d captions in %s.", updated_count, METADATA_PATH)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sinh caption hình ảnh cho keyframe bằng BLIP-2")
-    parser.add_argument("--batch-size", type=int, default=16, help="Số ảnh xử lý cùng lúc mỗi lần inference")
-    parser.add_argument("--save-every", type=int, default=10, help="Flush ra đĩa sau mỗi N batch")
-    parser.add_argument("--limit", type=int, default=0, help="Giới hạn số keyframe để test nhanh (0=all)")
+    parser = argparse.ArgumentParser(description="Generate visual captions for keyframes")
+    parser.add_argument("--batch-size", type=int, default=4, help="Images per captioning batch")
+    parser.add_argument("--save-every", type=int, default=10, help="Flush metadata after every N batches")
+    parser.add_argument("--limit", type=int, default=0, help="Limit pending keyframes for a smoke test (0=all)")
+    parser.add_argument("--force", action="store_true", help="Regenerate captions even when one already exists")
+    parser.add_argument("--min-words", type=int, default=5, help="Minimum words for a caption to be considered usable")
+    parser.add_argument("--model-name", default="Salesforce/blip2-opt-2.7b", help="Hugging Face caption model")
+    parser.add_argument("--model-type", choices=["auto", "blip", "blip2"], default="auto", help="Caption model family")
+    parser.add_argument("--prompt", choices=sorted(PROMPTS), default="aic", help="Prompt preset")
+    parser.add_argument("--max-new-tokens", type=int, default=80, help="Maximum generated caption tokens")
+    parser.add_argument("--num-beams", type=int, default=5, help="Beam search width")
     args = parser.parse_args()
-    generate_keyframe_captions(batch_size=args.batch_size, save_every=args.save_every, limit=args.limit)
+
+    generate_keyframe_captions(
+        batch_size=args.batch_size,
+        save_every=args.save_every,
+        limit=args.limit,
+        force=args.force,
+        min_words=args.min_words,
+        model_name=args.model_name,
+        model_type=args.model_type,
+        prompt_name=args.prompt,
+        max_new_tokens=args.max_new_tokens,
+        num_beams=args.num_beams,
+    )
