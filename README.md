@@ -1,75 +1,94 @@
-# AIC 2026 - Video Search Agent
+# AIC 2026 local retrieval backend
 
-Keyframe-centric video retrieval system for AIC 2026.
-The current codebase is organized around custom keyframes, per-frame metadata, CLIP features, and a two-level FAISS index.
+This repository is the **visual retrieval component**. It accepts final English
+CLIP evidence queries from the separate query-planning repository and returns
+ranked keyframe candidates. It does not rewrite Vietnamese, classify tasks,
+answer Q&A, or submit CSV files.
 
-## Pipeline
+## Runtime contract
 
-1. Extract BTC data archives.
-2. Build `data/keyframes/` and `data/map-keyframes/`.
-3. Import metadata into `data/index/metadata.jsonl`.
-4. Optionally generate captions and transcripts.
-5. Extract CLIP features for the keyframes.
-6. Build `video.index` and `scene.index`.
-
-## Important Paths
-
-- `data/keyframes/`: extracted keyframes
-- `data/map-keyframes/`: frame mapping CSV files
-- `data/clip-features/`: `.npy` CLIP features for keyframes
-- `data/index/metadata.jsonl`: canonical metadata
-- `data/index/video.index`: keyframe-level FAISS index
-- `data/index/scene.index`: scene-level FAISS index
-
-## Setup
-
-```bash
-pip install -r requirements.txt
+```text
+final English CLIP query
+  -> CLIP ViT-B/32 text encoder (+ optional text-only LoRA)
+  -> local FAISS video.index
+  -> index_metadata.json
+  -> SearchCandidate(video_id, original frame ID, timestamp, score)
 ```
 
-The code now discovers the project root automatically. If you need to override
-paths on another machine, set:
+There is no Qdrant service in this runtime.
 
-- `AIC_PROJECT_ROOT`: project directory
-- `AIC_DATA_ROOT`: data directory
-- `AIC_ZIP_DIR`: directory that contains the BTC archives
+## Artifact bundle
 
-If you want to use GPU, set `DEVICE=cuda` in `.env`.
-For Whisper transcription, `WHISPER_LANGUAGE` defaults to `vi` and `WHISPER_TASK` defaults to `transcribe`.
+Point `AIC_ARTIFACT_DIR` at one complete bundle received from the teammate:
 
-## Canonical Commands
+```text
+artifact-bundle/
+  video.index
+  index_metadata.json
+  lora_weights.pt              # optional
+  scene.index                  # optional; must have its metadata too
+  scene_metadata.json          # optional
+```
+
+`video.index` and `index_metadata.json` are mandatory. The metadata must map
+each indexed keyframe to the real submission `frame_id`; keyframe filename or
+ordinal is not a submission frame ID.
+
+Copy `.env.example` to `.env` and configure, for example:
+
+```env
+AIC_ARTIFACT_DIR=D:/AIC/artifacts/clip-b32-raw-v1
+AIC_CLIP_MODEL_NAME=ViT-B/32
+AIC_USE_LORA=true
+AIC_DEVICE=cuda
+```
+
+This codebase's LoRA checkpoint format adapts only CLIP's **text encoder**.
+It is compatible with raw BTC `ViT-B/32` image features. A checkpoint that
+also modified the visual encoder needs a matching custom loader and a
+re-indexed `video.index`.
+
+## Call from Python
+
+```python
+from backend.retrieval import search_clip_queries
+
+results = search_clip_queries(
+    ["a presenter standing on a stage", "a red car entering a stage"],
+    top_k=50,
+)
+
+for result in results:
+    print(result.query_index, result.query_text, result.candidates[:3])
+```
+
+Each `QueryRetrievalResult` keeps the query index and its own ranked results,
+so the caller can apply its task-specific RRF, Q&A, or TRAKE logic safely.
+
+## Optional offline tools
+
+Install them only when building or enriching artifacts:
 
 ```bash
+pip install -r requirements-offline.txt
 python scripts/extract_btc_data.py
-python scripts/import_btc_data.py --with-transcript
-python scripts/extract_clip_features.py
-python -m backend.embedding.build_index
-python -m backend.api.main
+python scripts/import_btc_data.py --with-transcript  # optional ASR
+python -m backend.preprocessing.generate_captions    # optional captions
+python scripts/build_index_features.py
 ```
 
-Optional steps:
+`import_btc_data.py` preserves the organizer's keyframe-to-original-frame
+mapping. `build_index_features.py` builds the local FAISS keyframe and scene
+indexes from BTC CLIP features. `extract_clip_features.py` is only for the
+case where organizer features are unavailable and you deliberately create your
+own raw CLIP ViT-B/32 features.
 
-```bash
-python -m backend.preprocessing.generate_captions
-python scripts/train_lora_clip.py --epochs 3 --batch-size 32 --num-workers 4
-```
+The repository deliberately contains no training loop. Training belongs to the
+teammate's training repository; runtime only loads the resulting LoRA
+checkpoint when configured.
 
-Caption smoke test before a full run:
-
-```bash
-python -m backend.preprocessing.generate_captions --limit 100 --batch-size 1 --prompt aic
-```
-
-## Batch Runner
-
-`pipeline_batch_run.py` now delegates to the canonical entrypoints above.
-It no longer keeps its own duplicate training/indexing/search logic.
-
-## Notebook Demos
-
-- `run_pipeline.ipynb`: end-to-end pipeline checklist
-- `search_demo.ipynb`: local retrieval demo against `data/index/video.index`
-
-## Query Behavior
-
-The search stack accepts Vietnamese input, translates to English when needed, and then encodes the text with CLIP.
+The next capabilities proposed in the research PDF - OCR/ASR/caption indexes,
+dense raw-video frame refinement, Q&A evidence answering, TRAKE DP, local
+evaluation, and CSV export - are not implemented here yet. The remaining
+offline metadata, transcription, and caption tools are retained because they
+directly support those future additions.

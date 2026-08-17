@@ -59,22 +59,18 @@ INDEX_DIR = DATA_ROOT / "index"
 VIDEO_METADATA_DIR = INDEX_DIR / "metadata_by_video"
 
 # Tạo các thư mục cần thiết
-for d in (DATA_ROOT, VIDEOS_DIR, INDEX_DIR, VIDEO_METADATA_DIR):
-    d.mkdir(parents=True, exist_ok=True)
 
 # Path Metadata & FAISS Index
 METADATA_PATH = INDEX_DIR / "metadata.jsonl"
-FAISS_INDEX_PATH = INDEX_DIR / "video.index"
-SCENE_FAISS_INDEX_PATH = INDEX_DIR / "scene.index"
-FAISS_METADATA_PATH = INDEX_DIR / "index_metadata.json"
-SCENE_METADATA_PATH = INDEX_DIR / "scene_metadata.json"
-TRAIN_PAIRS_PATH = INDEX_DIR / "train_pairs.jsonl"
+ARTIFACT_DIR = _resolve_env_path("AIC_ARTIFACT_DIR", INDEX_DIR)
+FAISS_INDEX_PATH = _resolve_env_path("AIC_FAISS_INDEX_PATH", ARTIFACT_DIR / "video.index")
+SCENE_FAISS_INDEX_PATH = _resolve_env_path("AIC_SCENE_FAISS_INDEX_PATH", ARTIFACT_DIR / "scene.index")
+FAISS_METADATA_PATH = _resolve_env_path("AIC_FAISS_METADATA_PATH", ARTIFACT_DIR / "index_metadata.json")
+SCENE_METADATA_PATH = _resolve_env_path("AIC_SCENE_METADATA_PATH", ARTIFACT_DIR / "scene_metadata.json")
 
 # LoRA Fine-tune
-LORA_WEIGHTS_PATH = INDEX_DIR / "lora_weights.pt"
-LORA_RANK = int(os.getenv("LORA_RANK", "4"))
-LORA_ALPHA = float(os.getenv("LORA_ALPHA", "1.0"))
-USE_LORA = os.getenv("USE_LORA", "auto").lower()  # "auto" | "true" | "false"
+LORA_WEIGHTS_PATH = _resolve_env_path("AIC_LORA_WEIGHTS_PATH", ARTIFACT_DIR / "lora_weights.pt")
+USE_LORA = os.getenv("AIC_USE_LORA", os.getenv("USE_LORA", "auto")).lower()
 
 # BTC Data Directories
 KEYFRAMES_DIR = DATA_ROOT / "keyframes"
@@ -91,11 +87,11 @@ WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "vi")
 WHISPER_TASK = os.getenv("WHISPER_TASK", "transcribe")
 
 # Embedding / CLIP Model
-CLIP_MODEL_NAME = os.getenv("CLIP_MODEL_NAME", "ViT-B/32")
+CLIP_MODEL_NAME = os.getenv("AIC_CLIP_MODEL_NAME", os.getenv("CLIP_MODEL_NAME", "ViT-B/32"))
 import torch
 
 def _get_default_device():
-    env_dev = os.getenv("DEVICE")
+    env_dev = os.getenv("AIC_DEVICE", os.getenv("DEVICE"))
     if env_dev:
         if env_dev.lower() in ("dml", "directml"):
             import torch_directml
@@ -112,43 +108,13 @@ def _get_default_device():
     return "cpu"
 
 DEVICE = _get_default_device()
-TEMPORAL_CHECKPOINT_PATH = INDEX_DIR / "temporal_encoder.pt"
-EMBED_DIM = 512
 KEYFRAME_POSITIONS = (0.25, 0.5, 0.75)
-TEXT_EMBED_WEIGHT = 0.65
-VISUAL_EMBED_WEIGHT = 0.35
 
 # BTC Keyframe Preprocessing / Smart Cutting
-BTC_FEATURE_MODEL_NAME = "ViT-B/32"
-BTC_FEATURE_DIM = 512
 SMART_CUT_SIMILARITY_THRESHOLD = 0.82
 SMART_CUT_MIN_SCENE_KEYFRAMES = 3
 SMART_CUT_MAX_SCENE_KEYFRAMES = 30
 
-# Fine-tune / Projection Head
-TRAIN_BATCH_SIZE = 32
-TRAIN_EPOCHS = 8
-TRAIN_LR = 1e-4
-VAL_SPLIT_RATIO = 0.2
-
-# API / Search Parameters
-DEFAULT_TOP_K = 20
-MAX_TOP_K = 100
-
-# Clarification
-AMBIGUITY_MARGIN_THRESHOLD = 0.04
-CLARIFICATION_TOP_K = 4
-MIN_SCORE_TO_CONSIDER = 0.15
-
-# Remote Vector DB Configuration (Qdrant)
-USE_REMOTE_VECTOR_DB = os.getenv("USE_REMOTE_VECTOR_DB", "false").lower() in ("true", "1", "yes")
-VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "qdrant")
-QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-QDRANT_URL = os.getenv("QDRANT_URL", None)
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
-QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "aic2026_keyframes")
-QDRANT_PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "false").lower() in ("true", "1", "yes")
 
 def resolve_path(p: str) -> Path:
     """Chuyển đổi đường dẫn (tương đối/tuyệt đối) về dạng Path chuẩn theo ROOT_DIR."""

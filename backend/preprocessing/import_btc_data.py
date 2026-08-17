@@ -429,7 +429,6 @@ def build_btc_metadata(
     limit_videos: int = 0,
     with_transcript: bool = False,
     force: bool = False,
-    translate_titles: bool = False,
 ) -> None:
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     VIDEO_METADATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -469,10 +468,6 @@ def build_btc_metadata(
         
         # Dịch title sang Tiếng Anh
         title = raw_title
-        if translate_titles:
-            from backend.embedding.clip_encoder import translate_vi_to_en
-
-            title = translate_vi_to_en(raw_title)
         
         frame_map = keyframe_maps.get(video_id, {})
 
@@ -560,15 +555,9 @@ if __name__ == "__main__":
         action="store_true",
         help="Force overwrite existing metadata JSONL files even if already generated",
     )
-    parser.add_argument(
-        "--translate-titles",
-        action="store_true",
-        help="Translate video titles to English during import (slower; uses online translator)",
-    )
     args = parser.parse_args()
     build_btc_metadata(
         limit_videos=args.limit,
         with_transcript=args.with_transcript,
         force=args.force,
-        translate_titles=args.translate_titles,
     )

@@ -27,13 +27,11 @@ from backend.config import (  # noqa: E402
     FAISS_INDEX_PATH,
     FAISS_METADATA_PATH,
     METADATA_PATH,
-    QDRANT_COLLECTION_NAME,
     SCENE_FAISS_INDEX_PATH,
     SCENE_METADATA_PATH,
     SMART_CUT_MAX_SCENE_KEYFRAMES,
     SMART_CUT_MIN_SCENE_KEYFRAMES,
     SMART_CUT_SIMILARITY_THRESHOLD,
-    USE_REMOTE_VECTOR_DB,
     VIDEO_METADATA_DIR,
 )
 
@@ -362,7 +360,6 @@ def _write_jsonl_by_video(rows: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build scene-level and keyframe-level indexes from BTC features")
-    parser.add_argument("--remote", action="store_true", help="Push keyframe vectors to remote vector DB")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of keyframes for testing (0=all)")
     args = parser.parse_args()
 
@@ -404,7 +401,12 @@ def main() -> None:
         faiss.write_index(scene_index, str(SCENE_FAISS_INDEX_PATH))
 
     _write_json(FAISS_METADATA_PATH, enriched_items)   # chỉ item có vector — khớp đúng với FAISS index
-    _write_json(SCENE_METADATA_PATH, scene_rows)
+    if scene_index is not None:
+        _write_json(SCENE_METADATA_PATH, scene_rows)
+    else:
+        # Keep scene artifacts an all-or-nothing optional pair for runtime.
+        SCENE_FAISS_INDEX_PATH.unlink(missing_ok=True)
+        SCENE_METADATA_PATH.unlink(missing_ok=True)
     _write_jsonl_by_video(final_metadata)               # đầy đủ, kể cả has_feature=False
 
     logger.info("Keyframe index: %s (%d vectors)", FAISS_INDEX_PATH, keyframe_index.ntotal)
@@ -414,22 +416,6 @@ def main() -> None:
         logger.info("Scene index: skipped (no scene vectors)")
     logger.info("Keyframe metadata: %s", FAISS_METADATA_PATH)
     logger.info("Scene metadata: %s", SCENE_METADATA_PATH)
-
-    if args.remote or USE_REMOTE_VECTOR_DB:
-        logger.info("Pushing keyframe vectors to remote vector database...")
-        try:
-            from backend.embedding.remote_index import init_remote_collection, upsert_vectors_remote
-
-            init_remote_collection(collection_name=QDRANT_COLLECTION_NAME, vector_size=keyframe_matrix.shape[1])
-            count = upsert_vectors_remote(
-                items=enriched_items,
-                vectors=keyframe_matrix,
-                collection_name=QDRANT_COLLECTION_NAME,
-            )
-            logger.info("Pushed %d keyframe vectors to %s.", count, QDRANT_COLLECTION_NAME)
-        except Exception as exc:
-            logger.warning("Could not push to remote vector DB: %s", exc)
-
 
 if __name__ == "__main__":
     main()

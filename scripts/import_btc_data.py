@@ -27,15 +27,9 @@ if __name__ == "__main__":
         action="store_true",
         help="Force overwrite existing metadata JSONL files even if already generated",
     )
-    parser.add_argument(
-        "--translate-titles",
-        action="store_true",
-        help="Translate video titles to English during import (slower; uses online translator)",
-    )
     args = parser.parse_args()
     build_btc_metadata(
         limit_videos=args.limit,
         with_transcript=args.with_transcript,
         force=args.force,
-        translate_titles=args.translate_titles,
     )
