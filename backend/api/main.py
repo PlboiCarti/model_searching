@@ -1,18 +1,28 @@
 import json
-import os
-import glob
+from pathlib import Path
 from typing import List, Optional
+
+import faiss
+import numpy as np
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import torch
-import clip
-import faiss
 
-app = FastAPI(title="AIC 2026 - Video Search Agent API", version="1.0.0")
+from backend.config import (
+    DEFAULT_TOP_K,
+    FAISS_INDEX_PATH,
+    FAISS_METADATA_PATH,
+    INDEX_DIR,
+    MAX_TOP_K,
+    ROOT_DIR,
+    SCENE_FAISS_INDEX_PATH,
+    SCENE_METADATA_PATH,
+)
+from backend.embedding.clip_encoder import encode_text
 
-# Cấu hình CORS để Frontend kết nối thoải mái
+app = FastAPI(title="AIC 2026 - Video Search Agent API", version="1.1.0")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,42 +31,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-clip_model = None
-faiss_index = None
-metadata_list = []
+if (ROOT_DIR / "data").exists():
+    app.mount("/videos", StaticFiles(directory=str(ROOT_DIR / "data")), name="videos")
 
-# Đăng ký thư mục chứa video (nếu có video thật trong data/videos hoặc data/keyframes)
-if os.path.exists("data"):
-    app.mount("/videos", StaticFiles(directory="data"), name="videos")
+keyframe_index = None
+scene_index = None
+metadata_list: list[dict] = []
+scene_metadata_list: list[dict] = []
 
-@app.on_event("startup")
-def startup_event():
-    global clip_model, faiss_index, metadata_list
-    print(f"🚀 Đang khởi tạo Backend trên thiết bị: {device}...")
-    
-    # 1. Load CLIP Model
-    clip_model, _ = clip.load("ViT-B/32", device=device)
-    print("✅ Đã load CLIP Model (ViT-B/32).")
-
-    # 2. Load Metadata
-    meta_path = os.path.join("data", "index", "metadata.jsonl")
-    if os.path.exists(meta_path):
-        with open(meta_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    metadata_list.append(json.loads(line))
-        print(f"✅ Đã load {len(metadata_list)} dòng metadata.")
-    else:
-        print(f"⚠️ Không tìm thấy metadata tại: {meta_path}")
-
-    # 3. Load FAISS Index
-    index_files = glob.glob(os.path.join("data", "index", "*.index"))
-    if index_files:
-        faiss_index = faiss.read_index(index_files[0])
-        print(f"✅ Đã load FAISS Index từ: {index_files[0]} ({faiss_index.ntotal} vectors)")
-    else:
-        print("⚠️ Không tìm thấy file FAISS Index trong data/index/")
 
 class ResultItem(BaseModel):
     video_id: str
@@ -69,66 +51,130 @@ class ResultItem(BaseModel):
     text: str
     submission: str
 
+
 class SearchResponse(BaseModel):
     results: List[ResultItem]
     needs_clarification: bool = False
     clarification: Optional[dict] = None
 
+
+def _load_json(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    return data if isinstance(data, list) else []
+
+
+def _load_indexes() -> None:
+    global keyframe_index, scene_index, metadata_list, scene_metadata_list
+
+    metadata_list = _load_json(FAISS_METADATA_PATH)
+    scene_metadata_list = _load_json(SCENE_METADATA_PATH)
+
+    if FAISS_INDEX_PATH.exists():
+        keyframe_index = faiss.read_index(str(FAISS_INDEX_PATH))
+    if SCENE_FAISS_INDEX_PATH.exists():
+        scene_index = faiss.read_index(str(SCENE_FAISS_INDEX_PATH))
+
+    if keyframe_index is not None and keyframe_index.ntotal != len(metadata_list):
+        print(
+            "WARNING: keyframe index/metadata length mismatch: "
+            f"{keyframe_index.ntotal} vectors vs {len(metadata_list)} metadata rows"
+        )
+
+
+@app.on_event("startup")
+def startup_event():
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    _load_indexes()
+    loaded = keyframe_index.ntotal if keyframe_index is not None else 0
+    print(f"Loaded local FAISS keyframe index with {loaded} vectors.")
+
+
 @app.get("/")
 def home():
-    return {"status": "ok", "message": "API Video Search Agent đang hoạt động!"}
+    return {
+        "status": "ok",
+        "index_vectors": keyframe_index.ntotal if keyframe_index is not None else 0,
+        "metadata_rows": len(metadata_list),
+    }
+
+
+def _scene_candidate_ids(query_vector: np.ndarray, scene_top_k: int) -> set[str]:
+    if scene_index is None or not scene_metadata_list:
+        return set()
+
+    k = min(max(scene_top_k, 1), scene_index.ntotal)
+    _scores, indices = scene_index.search(query_vector, k)
+    scene_ids = set()
+    for idx in indices[0]:
+        if 0 <= idx < len(scene_metadata_list):
+            scene_id = scene_metadata_list[idx].get("scene_id")
+            if scene_id:
+                scene_ids.add(str(scene_id))
+    return scene_ids
+
+
+def _format_submission(item: dict, task_type: str, answer: Optional[str]) -> str:
+    video_id = str(item.get("video_id", ""))
+    frame_id = str(item.get("frame_id", ""))
+    if task_type.lower() == "qa" and answer:
+        return f"{video_id}, {frame_id}, {answer}"
+    return f"{video_id}, {frame_id}"
+
 
 @app.get("/search", response_model=SearchResponse)
 def search(
-    query: str = Query(..., description="Mô tả sự kiện cần tìm"),
-    top_k: int = Query(20, description="Số lượng kết quả"),
-    task_type: str = Query("kis", description="Dạng bài: kis, qa, trake"),
-    answer: Optional[str] = Query(None, description="Câu trả lời cho dạng Q&A"),
-    clarification_answer: Optional[str] = None
+    query: str = Query(..., description="Mo ta su kien can tim"),
+    top_k: int = Query(DEFAULT_TOP_K, ge=1, le=MAX_TOP_K, description="So luong ket qua"),
+    task_type: str = Query("kis", description="Dang bai: kis, qa, trake"),
+    answer: Optional[str] = Query(None, description="Cau tra loi cho dang Q&A"),
+    scene_top_k: int = Query(8, ge=0, le=100, description="So scene de loc tho truoc khi xep hang keyframe"),
+    clarification_answer: Optional[str] = None,
 ):
-    if clip_model is None or faiss_index is None:
+    if keyframe_index is None or keyframe_index.ntotal == 0:
         return SearchResponse(results=[], needs_clarification=False)
 
-    # 1. Mã hóa câu query bằng CLIP
-    text_tokens = clip.tokenize([query]).to(device)
-    with torch.no_grad():
-        text_features = clip_model.encode_text(text_tokens)
-        text_features /= text_features.norm(dim=-1, keepdim=True)
-        query_vector = text_features.cpu().numpy().astype("float32")
+    query_vector = encode_text(query, translate=True).reshape(1, -1).astype("float32")
+    faiss.normalize_L2(query_vector)
 
-    # 2. Truy vấn FAISS Index
-    k_search = min(top_k, faiss_index.ntotal)
-    distances, indices = faiss_index.search(query_vector, k_search)
+    scene_ids = _scene_candidate_ids(query_vector, scene_top_k) if scene_top_k > 0 else set()
+    fetch_k = min(keyframe_index.ntotal, max(top_k * 20, top_k))
+    scores, indices = keyframe_index.search(query_vector, fetch_k)
 
-    results = []
-    for score, idx in zip(distances[0], indices[0]):
-        if idx < 0:
+    results: list[ResultItem] = []
+    seen_frames: set[tuple[str, str]] = set()
+    for score, idx in zip(scores[0], indices[0]):
+        if idx < 0 or idx >= len(metadata_list):
             continue
-        
-        # Lấy thông tin từ metadata (hoặc tạo dữ liệu giả lập nếu thiếu)
-        item = metadata_list[idx] if idx < len(metadata_list) else {}
-        
-        v_id = str(item.get("video_id", f"Video_{idx}"))
-        f_id = str(item.get("frame_id", idx * 25))
-        pts = float(item.get("pts_time", idx * 1.0))
-        text_desc = item.get("text", item.get("tags", f"Khoảnh khắc tại timestamp {pts:.1f}s"))
-        
-        # Định dạng dòng nộp bài (submission line) theo từng dạng bài thi AIC
-        if task_type == "qa" and answer:
-            sub_line = f"{v_id}, {f_id}, {answer}"
-        else:
-            sub_line = f"{v_id}, {f_id}"
+        item = metadata_list[int(idx)]
+        if scene_ids and str(item.get("scene_id", "")) not in scene_ids:
+            continue
 
-        results.append(ResultItem(
-            video_id=v_id,
-            video_title=item.get("video_title", f"Video {v_id}"),
-            score=float(score),
-            start=max(0.0, pts - 2.0), # Lùi 2s để xem trước
-            end=pts + 3.0,              # Tiến 3s
-            frame_id=f_id,
-            clip_id=item.get("clip_id", f"clip_{idx}"),
-            text=str(text_desc),
-            submission=sub_line
-        ))
+        video_id = str(item.get("video_id", ""))
+        frame_id = str(item.get("frame_id", ""))
+        dedupe_key = (video_id, frame_id)
+        if dedupe_key in seen_frames:
+            continue
+        seen_frames.add(dedupe_key)
+
+        pts = float(item.get("pts_time", item.get("start", 0.0)) or 0.0)
+        text_desc = item.get("caption") or item.get("text") or item.get("object_tags") or ""
+        results.append(
+            ResultItem(
+                video_id=video_id,
+                video_title=str(item.get("video_title", video_id)),
+                score=float(score),
+                start=max(0.0, pts - 2.0),
+                end=pts + 3.0,
+                frame_id=frame_id,
+                clip_id=str(item.get("clip_id", "")),
+                text=str(text_desc),
+                submission=_format_submission(item, task_type, answer),
+            )
+        )
+        if len(results) >= top_k:
+            break
 
     return SearchResponse(results=results, needs_clarification=False)

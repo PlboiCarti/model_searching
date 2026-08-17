@@ -186,7 +186,7 @@ def build_sequence_pairs() -> List[Dict]:
     for v_id, v_items in by_video.items():
         if len(v_items) < 2:
             continue
-        v_items = sorted(v_items, key=lambda x: x.get("frame_id", x.get("keyframe_ordinal", 0)))
+        v_items = sorted(v_items, key=lambda x: (x.get("keyframe_ordinal", 0), x.get("frame_id", 0)))
         seq_matrix = np.stack([it["img_emb"] for it in v_items]).astype("float32")
         txt_emb = np.mean([it["txt_emb"] for it in v_items], axis=0).astype("float32")
         norm = np.linalg.norm(txt_emb)

@@ -13,5 +13,8 @@ uvicorn[standard]>=0.29
 python-multipart
 numpy<2
 pydantic>=2
-faiss-cpu>=1.7.0
+Pillow>=10.0.0
+transformers>=4.42.0
+deep-translator>=1.11.4
+matplotlib>=3.8.0
 python-dotenv>=1.0.0

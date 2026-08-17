@@ -8,6 +8,7 @@ from backend.config import (
     WHISPER_DEVICE,
     WHISPER_LANGUAGE,
     WHISPER_MODEL_SIZE,
+    WHISPER_TASK,
 )
 
 
@@ -25,12 +26,11 @@ def transcribe_video(video_path: Path) -> List[Dict]:
     segments, _info = model.transcribe(
         str(video_path),
         language=WHISPER_LANGUAGE,
-        task="translate",
+        task=WHISPER_TASK,
         vad_filter=True,
     )
     return [
         {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
         for s in segments
     ]
-
 

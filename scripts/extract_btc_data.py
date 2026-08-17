@@ -8,12 +8,11 @@ Tự động xử lý mapping tên thư mục gốc trong zip sang thư mục đ
   - objects/          → data/objects/
 """
 import sys
+import shutil
 import zipfile
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-ZIP_DIR = ROOT_DIR / "ZIP"
-DATA_DIR = ROOT_DIR / "data"
 
 # Mapping: prefix bên trong zip → thư mục đích trong data/
 PREFIX_MAP = {
@@ -21,9 +20,18 @@ PREFIX_MAP = {
     "map-keyframes":    "map-keyframes",
     "mapkeyframes":     "map-keyframes",
     "media-info":       "media-info",
+    "objects":          "objects",
+    "object":           "objects",
+    "clip-features":    "clip-features",
+    "clip-features-32": "clip-features",
+    "clipfeatures":     "clip-features",
     "videos":           "videos",
     "video":            "videos",
 }
+
+sys.path.insert(0, str(ROOT_DIR))
+
+from backend.config import DATA_ROOT, ZIP_DIR  # noqa: E402
 
 
 def _detect_prefix(zip_path: Path) -> tuple[str, str, bool]:
@@ -36,9 +44,11 @@ def _detect_prefix(zip_path: Path) -> tuple[str, str, bool]:
             parts = name.split("/")
             if len(parts) >= 2 and parts[0]:
                 root_prefix = parts[0]
+                normalized_root = root_prefix.lower().replace("_", "-")
                 for known_prefix, target in PREFIX_MAP.items():
                     # Nếu thư mục gốc thực sự tên là `keyframes` v.v. -> Strip nó đi
-                    if root_prefix == known_prefix or root_prefix.startswith(known_prefix + "-"):
+                    normalized_known = known_prefix.lower().replace("_", "-")
+                    if normalized_root == normalized_known or normalized_root.startswith(normalized_known + "-"):
                         return root_prefix, target, True
         
         # Nếu không có thư mục gốc chuẩn, đoán qua tên file zip
@@ -56,7 +66,7 @@ def extract_zip(zip_path: Path, dry_run: bool = False) -> int:
         print(f"  SKIP: Could not detect target dir for {zip_path.name}")
         return 0
 
-    target_dir = DATA_DIR / target_dir_name
+    target_dir = DATA_ROOT / target_dir_name
     target_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"  {zip_path.name}")
@@ -89,7 +99,7 @@ def extract_zip(zip_path: Path, dry_run: bool = False) -> int:
 
             dest.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(dest, "wb") as dst:
-                dst.write(src.read())
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
             extracted += 1
 
     print(f"    Extracted {extracted} files" + (" (dry-run)" if dry_run else ""))

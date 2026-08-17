@@ -195,6 +195,7 @@ def search_remote(
             query=query_vec_list,
             limit=top_k,
             query_filter=query_filter,
+            score_threshold=score_threshold,
             with_payload=True,
         )
         hits = response.points

@@ -29,19 +29,8 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from backend.config import (  # noqa: E402
     BTC_CLIP_FEATURES_DIR,
-    DEVICE,
-    EMBED_DIM,
     METADATA_PATH,
-    PROJECTED_DIM,
-    PROJECTION_HEAD_PATH,
-    QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
-    QDRANT_HOST,
-    QDRANT_PORT,
-    QDRANT_PREFER_GRPC,
-    QDRANT_URL,
-    USE_REMOTE_VECTOR_DB,
-    VECTOR_DB_TYPE,
     resolve_path,
 )
 from backend.embedding.remote_index import (  # noqa: E402

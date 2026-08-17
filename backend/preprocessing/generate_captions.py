@@ -80,7 +80,8 @@ def generate_keyframe_captions(batch_size: int = 16, save_every: int = 10, limit
     # ── Nạp model CHỈ KHI có việc cần làm ─────────────────────────────────
     processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
     model = Blip2ForConditionalGeneration.from_pretrained(
-        "Salesforce/blip2-opt-2.7b", torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32
+        "Salesforce/blip2-opt-2.7b",
+        torch_dtype=torch.float16 if str(DEVICE).startswith("cuda") else torch.float32,
     ).to(DEVICE)
     model.eval()
 
@@ -100,7 +101,8 @@ def generate_keyframe_captions(batch_size: int = 16, save_every: int = 10, limit
             img_path = resolve_path(item.get("path", ""))
             if img_path.exists():
                 try:
-                    img = Image.open(img_path).convert("RGB")
+                    with Image.open(img_path) as fh:
+                        img = fh.convert("RGB")
                     images_to_process.append(img)
                     indices_to_update.append(idx)
                 except Exception as e:
@@ -122,7 +124,7 @@ def generate_keyframe_captions(batch_size: int = 16, save_every: int = 10, limit
             return_tensors="pt",
             padding=True,
         ).to(DEVICE)
-        with torch.no_grad():
+        with torch.inference_mode():
             generated_ids = model.generate(
                 **inputs,
                 max_new_tokens=60,

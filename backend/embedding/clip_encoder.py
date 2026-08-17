@@ -107,6 +107,7 @@ def encode_clip_visual(clip_path: str) -> Optional[np.ndarray]:
     return encode_images(extract_keyframes(clip_path))
 
 
+@lru_cache(maxsize=4096)
 def translate_vi_to_en(text: str) -> str:
     """Tự động dịch Tiếng Việt sang Tiếng Anh để tối ưu hoá cho mô hình CLIP gốc."""
     if not text or not text.strip():
