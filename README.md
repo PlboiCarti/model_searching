@@ -103,6 +103,11 @@ Use `-e ".[dev]"` while developing this repository, or `-e ".[offline]"`
 when building visual artifacts locally. The calling repository imports only the
 public API:
 
+For IDEs that expect a `requirements.txt`, select this repository's virtual
+environment and run `python -m pip install -r requirements.txt`. That file
+intentionally forwards to the `dev` and `offline` extras in `pyproject.toml`,
+so dependency versions remain defined in one place.
+
 ```python
 from aic_model_searching import search_clip_queries
 ```

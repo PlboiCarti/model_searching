@@ -77,18 +77,48 @@ def inject_lora(
     return injected_count
 
 
-def _validate_checkpoint_metadata(metadata: object, path: Path) -> dict:
+def _is_legacy_text_only_state(lora_state: dict) -> bool:
+    """Return whether a legacy state is provably confined to CLIP text layers."""
+    if not lora_state:
+        return False
+    return all(
+        isinstance(key, str)
+        and key.startswith("transformer.")
+        and key.endswith((".lora_A", ".lora_B"))
+        for key in lora_state
+    )
+
+
+def _validate_checkpoint_metadata(metadata: object, lora_state: dict, path: Path) -> dict:
     if not isinstance(metadata, dict):
         raise ValueError(f"LoRA checkpoint metadata must be an object: {path}")
     clip_model = metadata.get("clip_model")
     if not isinstance(clip_model, str) or not clip_model.strip():
         raise ValueError(f"LoRA checkpoint metadata.clip_model is required: {path}")
-    if metadata.get("adapter_scope") != _TEXT_ONLY_SCOPE:
+
+    adapter_scope = metadata.get("adapter_scope")
+    if adapter_scope == _TEXT_ONLY_SCOPE:
+        return metadata
+    if adapter_scope is None and _is_legacy_text_only_state(lora_state):
+        normalized_metadata = dict(metadata)
+        normalized_metadata["adapter_scope"] = _TEXT_ONLY_SCOPE
+        logger.warning(
+            "LoRA checkpoint %s has no adapter_scope; inferred text_only from "
+            "transformer-only LoRA keys.",
+            path,
+        )
+        return normalized_metadata
+    if adapter_scope is None:
+        raise ValueError(
+            "LoRA checkpoint metadata.adapter_scope is missing and its state is "
+            f"not provably text-only: {path}"
+        )
+    if adapter_scope != _TEXT_ONLY_SCOPE:
         raise ValueError(
             "LoRA checkpoint metadata.adapter_scope must be 'text_only': "
             f"{path}"
         )
-    return metadata
+    raise AssertionError("unreachable")
 
 
 def load_lora_weights(model: nn.Module, path: Path) -> dict:
@@ -112,7 +142,7 @@ def load_lora_weights(model: nn.Module, path: Path) -> dict:
         raise ValueError(f"LoRA checkpoint alpha must be positive: {path}")
     if not isinstance(lora_state, dict):
         raise ValueError(f"Invalid LoRA checkpoint state: {path}")
-    metadata = _validate_checkpoint_metadata(checkpoint.get("metadata"), path)
+    metadata = _validate_checkpoint_metadata(checkpoint.get("metadata"), lora_state, path)
 
     if not any(isinstance(module, LoRALinear) for module in model.modules()):
         inject_lora(model, rank=rank, alpha=float(alpha))
