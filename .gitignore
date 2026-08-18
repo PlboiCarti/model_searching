@@ -23,3 +23,6 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 aic_model_searching.egg-info/
+index/
+tests/
+*.pdf
