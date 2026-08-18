@@ -1,43 +1,89 @@
-# AIC 2026 CLIP retrieval consumer
+# AIC 2026 CLIP keyframe retrieval
 
-`aic-model-searching` is a consumer-only local retrieval package. It accepts
-final English CLIP queries from the query-planning repository and searches a
-pre-built, external FAISS artifact bundle. It never creates keyframes,
-metadata, CLIP features, or indexes.
+`aic-model-searching` is a **consumer-only** package. It receives final
+English CLIP queries, searches one pre-built CLIP ViT-B/32 FAISS index, and
+returns ranked keyframe references. It does not train models, create
+keyframes, build indexes, open keyframe images, or implement KIS/QA/TRAKE
+logic.
 
-## Runtime contract
-
-```text
-final English CLIP query
-  -> OpenAI CLIP ViT-B/32 text encoder (+ optional text-only LoRA)
-  -> external FAISS video.index
-  -> external index_metadata.json
-  -> QueryRetrievalResult / SearchCandidate
-```
-
-The calling repository owns Vietnamese query planning, query fusion, temporal
-grouping, QA, TRAKE, refinement, evaluation, and submission output.
-
-## Artifact bundle supplied by the teammate
-
-Set `AIC_ARTIFACT_DIR` to one immutable bundle with this layout:
+## Boundary
 
 ```text
-clip-b32-bundle/
-  artifact_manifest.json       # required
-  video.index                  # required FAISS inner-product index
-  index_metadata.json          # required JSON array, one row per vector
-  lora_weights.pt              # required only when the manifest uses text_only_lora
-  scene.index                  # optional; only with scene_metadata.json
-  scene_metadata.json          # optional; only with scene.index
+Query/task repository                         This package
+final English clip_queries  ───────────────►  CLIP ViT-B/32 text encoding
+                                               + FAISS keyframe retrieval
+                                               ↓
+                                         QueryRetrievalResult per query
+                                               ↓
+task fusion, OCR/VLM, QA, TRAKE DP,          SearchCandidate metadata
+and submission output  ◄───────────────────  (no task logic here)
 ```
 
-`artifact_manifest.json` is required so the consumer can reject an
-incompatible bundle before search. A valid minimal manifest is:
+A `SearchCandidate` is one coarse keyframe hit:
+
+```text
+video_id           L01_V001
+keyframe_relpath   L01_V001/0042.jpg
+frame_id           6731       # original frame ID for submission
+pts_time           269.24
+score              0.31       # comparable only within this query
+```
+
+`QueryRetrievalResult` is a wrapper for one input query and contains
+`query_index`, `query_text`, and its ranked `candidates` list.
+
+## Install
+
+Use Python **3.11 or 3.12**. Python 3.14 is intentionally unsupported by the
+package metadata because the current Torch/NumPy/FAISS stack is not a reliable
+runtime combination on Windows.
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+`requirements.txt` installs this repository in editable mode together with
+the test dependency. For runtime-only installation in another repository:
+
+```powershell
+python -m pip install -e D:\VideoQuery\model_searching
+```
+
+## Runtime environment
+
+Copy `.env.example` to `.env` and set only these package variables:
+
+```env
+AIC_ARTIFACT_DIR=E:/AIC2026/artifacts/clip-b32-btc-v1
+AIC_DEVICE=cuda
+AIC_USE_LORA=false
+```
+
+`AIC_KEYFRAME_ROOT` deliberately does **not** belong here: this package never
+opens JPEGs. The task repository that performs OCR/VLM/TRAKE logic owns that
+machine-local setting, for example `E:/AIC2026/keyframes`.
+
+## Required artifact bundle
+
+`AIC_ARTIFACT_DIR` must point to one immutable bundle:
+
+```text
+clip-b32-btc-v1/
+├── artifact_manifest.json       # required
+├── video.index                  # required FAISS inner-product index
+├── index_metadata.json          # required JSON array, one row per vector
+├── lora_weights.pt              # only for text_only_lora
+├── scene.index                  # optional, paired with the file below
+└── scene_metadata.json          # optional
+```
+
+Minimal `artifact_manifest.json`:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "clip_model": "ViT-B/32",
   "image_embedding_space": "openai_clip_vit_b32",
   "embedding_dimension": 512,
@@ -48,78 +94,84 @@ incompatible bundle before search. A valid minimal manifest is:
 }
 ```
 
-Use `"text_encoder_adapter": "text_only_lora"` only when the bundle also
-contains the matching `lora_weights.pt` and the consumer is configured with
-`AIC_USE_LORA=true`.
+Each `index_metadata.json` row must remain in exactly the same order as its
+FAISS vector and contain this minimum contract:
 
-### Non-negotiable bundle constraints
-
-- `video.index` must contain normalized **OpenAI CLIP ViT-B/32 image vectors**
-  in a 512-dimensional inner-product space. A same-sized vector from another
-  encoder, a projection head, or a visual-side LoRA is incompatible.
-- `index_metadata.json` must be a JSON array in exactly the FAISS vector order.
-  Its length must equal `vector_count` and `video.index.ntotal`.
-- Every metadata row must contain non-empty `video_id`, the real original
-  submission `frame_id` (not a keyframe filename/ordinal), and finite,
-  non-negative `pts_time`. `clip_id` and `scene_id` are optional.
-- If scene artifacts are provided, both scene files must be present, their row
-  count must equal the scene index total, and their dimension must equal the
-  keyframe index dimension.
-- A LoRA checkpoint must contain `metadata.clip_model == "ViT-B/32"` and
-  `metadata.adapter_scope == "text_only"`. A visual-side adapter requires a
-  re-encoded image index and is rejected.
-
-Ask the teammate to version the whole bundle together: changing any index,
-metadata file, manifest, CLIP checkpoint family, or enabled LoRA produces a
-new bundle version.
-
-## Environment configuration
-
-Copy `.env.example` to `.env`. Only these variables are supported:
-
-```env
-# Required: directory containing the complete bundle above.
-AIC_ARTIFACT_DIR=D:/AIC/artifacts/clip-b32-btc-v1
-
-# Optional: cpu, cuda, or cuda:N. Defaults to CUDA when available, else CPU.
-AIC_DEVICE=cuda
-
-# Optional: true only for a bundle declaring text_only_lora; otherwise false.
-AIC_USE_LORA=false
+```json
+{
+  "video_id": "L01_V001",
+  "keyframe_relpath": "L01_V001/0042.jpg",
+  "frame_id": 6731,
+  "pts_time": 269.24
+}
 ```
 
-`AIC_CLIP_MODEL_NAME`, per-file index paths, BTC data paths, and offline-build
-settings are intentionally unsupported. The model is fixed to `ViT-B/32` and
-bundle filenames are fixed to make compatibility inspectable.
+Rules enforced at load time:
 
-## Install and call
+- Vectors are normalized OpenAI CLIP `ViT-B/32` image vectors, 512-dimension,
+  with FAISS inner-product metric.
+- `vector_count`, FAISS `ntotal`, and metadata row count must agree.
+- `keyframe_relpath` is a relative `.jpg`/`.jpeg` POSIX path directly inside
+  its `video_id` directory. Never put an absolute local path in the bundle.
+- `frame_id` is the non-negative original video frame ID, never the keyframe
+  filename/ordinal. `pts_time` is finite and non-negative.
+- When `text_encoder_adapter` is `text_only_lora`, the bundle must include the
+  matching checkpoint and `AIC_USE_LORA=true`. The checkpoint must declare
+  `clip_model: ViT-B/32` and `adapter_scope: text_only`.
 
-Install into the virtual environment of the calling repository:
+Adding `keyframe_relpath` to aligned metadata does **not** require re-training
+LoRA or rebuilding FAISS. Rebuilding is required if the image vectors, their
+order, the visual encoder, or the embedding space changes.
 
-```powershell
-python -m pip install -e D:\VideoQuery\model_searching
-```
-
-For package development, install test dependencies with:
-
-```powershell
-python -m pip install -e ".[dev]"
-```
-
-Then call the public API:
+## Search API
 
 ```python
 from aic_model_searching import search_clip_queries
 
 results = search_clip_queries(
-    ["a presenter standing on a stage", "a red car entering a stage"],
+    ["a presenter on a stage", "a red car entering a stage"],
     top_k=50,
 )
 
 for result in results:
-    print(result.query_index, result.query_text, result.candidates[:3])
+    for candidate in result.candidates:
+        print(
+            result.query_index,
+            candidate.video_id,
+            candidate.keyframe_relpath,
+            candidate.frame_id,
+            candidate.pts_time,
+        )
 ```
 
-Each `QueryRetrievalResult` retains its original query index and ranked
-candidates. The caller can therefore apply task-specific rank fusion without
-losing provenance.
+`top_k` applies to **each** input query. The package preserves query
+provenance; the caller must not compare raw CLIP `score` values across
+different queries as if they were calibrated.
+
+## Keyframe reference in the task repository
+
+The task repository resolves evidence images with its own local root:
+
+```python
+from pathlib import Path
+
+keyframe_root = Path("E:/AIC2026/keyframes")
+image_path = keyframe_root / candidate.keyframe_relpath
+```
+
+Use `image_path` for OCR/VLM or visual task logic. Keep `candidate.frame_id`
+unchanged for submission. `pts_time` remains useful for temporal grouping and
+TRAKE ordering even in a keyframe-only baseline.
+
+## Handoff checklist
+
+1. Use Python 3.11 or 3.12 and install `requirements.txt`.
+2. Provide a schema-2 bundle with the required manifest, index, and aligned
+   metadata.
+3. Ensure every metadata row resolves under the task repository's
+   `AIC_KEYFRAME_ROOT`.
+4. Verify one real English query and manually open at least one returned
+   `keyframe_relpath`.
+5. Run `python -m pytest -q` and `python -m compileall aic_model_searching`.
+6. Version the source package and artifact bundle separately; never mutate a
+   bundle in place after measuring an experiment.

@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aic-model-searching"
-version = "0.1.0"
-description = "Local image-only CLIP and FAISS retrieval for AIC 2026"
+version = "0.2.0"
+description = "Consumer-only CLIP ViT-B/32 FAISS keyframe retrieval for AIC 2026"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "torch>=2.1",
     "torchvision>=0.16",

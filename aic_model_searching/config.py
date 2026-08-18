@@ -43,7 +43,7 @@ LORA_WEIGHTS_PATH = ARTIFACT_DIR / "lora_weights.pt"
 
 CLIP_MODEL_NAME = "ViT-B/32"
 CLIP_EMBEDDING_DIMENSION = 512
-ARTIFACT_SCHEMA_VERSION = 1
+ARTIFACT_SCHEMA_VERSION = 2
 
 _use_lora = os.getenv("AIC_USE_LORA", "false").lower()
 if _use_lora not in {"true", "false"}:

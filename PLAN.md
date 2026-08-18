@@ -1,59 +1,82 @@
-# Consumer-only retrieval boundary
+# Handoff contract: CLIP keyframe retrieval
 
-## Purpose
+## Scope fixed for v0.2.0
 
-This package consumes one pre-built OpenAI CLIP ViT-B/32 FAISS bundle and
-returns per-query keyframe candidates. It is intentionally not an artifact
-builder or a task-orchestration system.
+This repository is the visual retrieval backend only:
 
 ```text
-Query repository
-  final English clip_queries
-    -> aic_model_searching.search_clip_queries(...)
-    -> list[QueryRetrievalResult]
-    -> query-owned fusion, task logic, and submission
-
-Artifact producer
-  BTC keyframes/features/mapping
-    -> versioned CLIP-B/32 artifact bundle
-    -> supplied to this package through AIC_ARTIFACT_DIR
+final English CLIP query
+  -> OpenAI CLIP ViT-B/32 text encoder
+  -> external FAISS keyframe index
+  -> per-query ranked SearchCandidate records
 ```
 
-## In scope
+It does not own Vietnamese query processing, query expansion, RRF, OCR, VLM,
+QA answering, TRAKE dynamic programming, CSV output, training, or artifact
+construction.
 
-- Load and validate the artifact manifest, keyframe FAISS index, metadata, and
-  optional scene pair.
-- Encode final English queries using OpenAI CLIP ViT-B/32.
-- Optionally load a validated text-only LoRA checkpoint.
-- Return provenance-preserving candidates with real `frame_id` and `pts_time`.
+## Producer contract
 
-## Explicitly out of scope
+The artifact producer supplies a versioned directory through
+`AIC_ARTIFACT_DIR` containing:
 
-- Downloading BTC data; extracting keyframes/features; generating metadata;
-  scene cutting; or building FAISS indexes.
-- OCR, ASR, captions, image re-encoding, PE/SigLIP2, model training, and
-  visual-side LoRA.
-- Vietnamese query processing, RRF, temporal regions, dense refinement, QA,
-  TRAKE, evaluation, and CSV submission.
+```text
+artifact_manifest.json
+video.index
+index_metadata.json
+optional: lora_weights.pt, scene.index + scene_metadata.json
+```
 
-## Definition of a valid hand-off
+`artifact_manifest.json` uses `schema_version: 2`. `video.index` contains
+normalized, 512-dimensional OpenAI CLIP ViT-B/32 image vectors indexed by
+inner product. Its row order is immutable.
 
-The producer hands over one immutable directory described in `README.md`.
-Before the query repository uses it, validate:
+For vector row `i`, metadata row `i` must contain:
 
-1. `artifact_manifest.json`, `video.index`, and `index_metadata.json` exist.
-2. The manifest declares `ViT-B/32`, `openai_clip_vit_b32`, dimension `512`,
-   normalized inner-product vectors, and the exact vector count.
-3. FAISS total, metadata row count, and manifest vector count agree.
-4. Every candidate row has an original submission `frame_id`, not a keyframe
-   ordinal or filename.
-5. If LoRA is enabled, its metadata declares the same model and `text_only`.
-6. Run at least one real English query after the bundle is installed.
+```json
+{
+  "video_id": "L01_V001",
+  "keyframe_relpath": "L01_V001/0042.jpg",
+  "frame_id": 6731,
+  "pts_time": 269.24
+}
+```
 
-## Consumer release checklist
+`keyframe_relpath` identifies the original keyframe JPEG directly inside its
+`video_id` directory, relative to a root owned by the task repository.
+`frame_id` is the original video frame ID used for submission; it is never the
+keyframe filename stem.
 
-1. Keep the runtime dependency versions and the artifact manifest together in
-   the hand-off record.
-2. Run `python -m pytest -q` and `python -m compileall aic_model_searching`.
-3. Tag the package release and the artifact bundle separately; do not mutate a
-   bundle in place after it has been used for an experiment.
+## Consumer contract
+
+`search_clip_queries(clip_queries, top_k=N)` returns one
+`QueryRetrievalResult` per input query. Each result retains its query index and
+contains up to `N` `SearchCandidate` records. The caller resolves keyframe
+evidence with:
+
+```text
+AIC_KEYFRAME_ROOT / candidate.keyframe_relpath
+```
+
+`AIC_KEYFRAME_ROOT` is deliberately not a setting of this package, because the
+package does not open image files.
+
+## Compatibility rules
+
+- Adding `keyframe_relpath` to existing, aligned metadata does not change
+  image vectors and therefore does not require a FAISS rebuild or LoRA retrain.
+- Reordering, deleting, or inserting metadata rows without the identical
+  vector operation invalidates the bundle.
+- A visual encoder change, visual-side LoRA, projection head, or a different
+  CLIP image space requires new image vectors and a new index.
+- `text_only_lora` is valid only when trained for the same fixed ViT-B/32 image
+  vector space and declared in both the manifest and `AIC_USE_LORA`.
+
+## Verification before handoff
+
+1. Create a Python 3.11 or 3.12 environment; do not use Python 3.14.
+2. Install `requirements.txt` from this repository root.
+3. Run `python -m pytest -q` and `python -m compileall aic_model_searching`.
+4. Load the real bundle and make one English query.
+5. Confirm a returned `keyframe_relpath` opens below the task repository's
+   keyframe root and its `frame_id` is the corresponding original frame ID.

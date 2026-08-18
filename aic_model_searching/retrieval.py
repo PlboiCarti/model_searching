@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass
 from functools import lru_cache
 from math import isfinite
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import faiss
@@ -36,8 +36,8 @@ class RetrievalBundleError(RuntimeError):
 @dataclass(frozen=True)
 class SearchCandidate:
     video_id: str
+    keyframe_relpath: str
     frame_id: str
-    clip_id: str
     pts_time: float
     score: float
     metadata: dict[str, Any]
@@ -127,12 +127,41 @@ def _validate_artifact_manifest(
 def _validate_keyframe_metadata(rows: list[dict[str, Any]], path: Path) -> None:
     """Reject keyframe artifacts that cannot produce valid AIC candidates."""
     for row_index, item in enumerate(rows):
-        for field in ("video_id", "frame_id", "pts_time"):
+        for field in ("video_id", "keyframe_relpath", "frame_id", "pts_time"):
             value = item.get(field)
             if value is None or (isinstance(value, str) and not value.strip()):
                 raise RetrievalBundleError(
                     f"keyframe metadata row {row_index} has missing {field!r}: {path}"
                 )
+
+        video_id = str(item["video_id"])
+        keyframe_relpath = item["keyframe_relpath"]
+        if not isinstance(keyframe_relpath, str):
+            raise RetrievalBundleError(
+                f"keyframe metadata row {row_index} has invalid 'keyframe_relpath': {path}"
+            )
+        if "\\" in keyframe_relpath:
+            raise RetrievalBundleError(
+                "keyframe_relpath must use portable POSIX separators '/': "
+                f"row {row_index}: {path}"
+            )
+        keyframe_path = PurePosixPath(keyframe_relpath)
+        if (
+            keyframe_path.is_absolute()
+            or ".." in keyframe_path.parts
+            or keyframe_path.parent.name != video_id
+            or keyframe_path.suffix.lower() not in {".jpg", ".jpeg"}
+        ):
+            raise RetrievalBundleError(
+                "keyframe_relpath must be a relative JPEG path under its video_id directory: "
+                f"row {row_index}: {path}"
+            )
+
+        frame_id = item["frame_id"]
+        if isinstance(frame_id, bool) or not str(frame_id).isdigit():
+            raise RetrievalBundleError(
+                f"keyframe metadata row {row_index} has invalid original 'frame_id': {path}"
+            )
         try:
             pts_time = float(item["pts_time"])
         except (TypeError, ValueError) as exc:
@@ -281,8 +310,8 @@ class LocalClipRetriever:
             candidates.append(
                 SearchCandidate(
                     video_id=video_id,
+                    keyframe_relpath=str(item["keyframe_relpath"]),
                     frame_id=frame_id,
-                    clip_id=str(item.get("clip_id", "")),
                     pts_time=float(item.get("pts_time", item.get("start", 0.0)) or 0.0),
                     score=float(score),
                     metadata=dict(item),

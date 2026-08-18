@@ -1,3 +1,5 @@
-# Convenience entrypoint for IDEs and local development.
-# Dependency versions are defined only in pyproject.toml.
+# Install from this repository root with:
+#   python -m pip install -r requirements.txt
+# Runtime dependencies are declared only in pyproject.toml. The dev extra adds
+# pytest so every handoff recipient can run the supplied tests.
 -e .[dev]

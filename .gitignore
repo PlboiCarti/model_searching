@@ -4,6 +4,8 @@
 # External artifact bundles and checkpoints
 artifacts/
 index/
+keyframes/
+videos/
 *.pt
 *.index
 *.jsonl

@@ -26,14 +26,24 @@ def _write_bundle(tmp_path, manifest_updates=None, index_factory=faiss.IndexFlat
     metadata_path.write_text(
         json.dumps(
             [
-                {"video_id": "L01_V001", "frame_id": 100, "clip_id": "kf_0001", "pts_time": 4.0},
-                {"video_id": "L01_V002", "frame_id": 200, "clip_id": "kf_0002", "pts_time": 8.0},
+                {
+                    "video_id": "L01_V001",
+                    "keyframe_relpath": "L01_V001/0001.jpg",
+                    "frame_id": 100,
+                    "pts_time": 4.0,
+                },
+                {
+                    "video_id": "L01_V002",
+                    "keyframe_relpath": "L01_V002/0002.jpg",
+                    "frame_id": 200,
+                    "pts_time": 8.0,
+                },
             ]
         ),
         encoding="utf-8",
     )
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "clip_model": "ViT-B/32",
         "image_embedding_space": "openai_clip_vit_b32",
         "embedding_dimension": 512,
@@ -64,6 +74,10 @@ def test_search_many_preserves_query_provenance(tmp_path, monkeypatch):
     assert [result.query_index for result in results] == [0, 1]
     assert [result.query_text for result in results] == ["a presenter", "a red car"]
     assert [result.candidates[0].frame_id for result in results] == ["100", "100"]
+    assert [result.candidates[0].keyframe_relpath for result in results] == [
+        "L01_V001/0001.jpg",
+        "L01_V001/0001.jpg",
+    ]
 
 
 def test_bundle_rejects_mismatched_metadata_length(tmp_path):
@@ -80,7 +94,15 @@ def test_bundle_rejects_mismatched_metadata_length(tmp_path):
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("video_id", ""), ("frame_id", None), ("pts_time", "not-a-timestamp")],
+    [
+        ("video_id", ""),
+        ("keyframe_relpath", "../0001.jpg"),
+        ("keyframe_relpath", "L01_V002/0001.jpg"),
+        ("keyframe_relpath", "L01_V001\\\\0001.jpg"),
+        ("keyframe_relpath", "/L01_V001/0001.jpg"),
+        ("frame_id", None),
+        ("pts_time", "not-a-timestamp"),
+    ],
 )
 def test_bundle_rejects_invalid_candidate_metadata(tmp_path, field, value):
     index_path, metadata_path, manifest_path = _write_bundle(tmp_path)
