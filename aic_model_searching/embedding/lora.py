@@ -1,13 +1,10 @@
 """Runtime loader for the text-only CLIP LoRA checkpoint format."""
 
-import logging
 from pathlib import Path
 from typing import Optional
 
 import torch
 import torch.nn as nn
-
-logger = logging.getLogger(__name__)
 
 _TEXT_ONLY_SCOPE = "text_only"
 
@@ -77,18 +74,6 @@ def inject_lora(
     return injected_count
 
 
-def _is_legacy_text_only_state(lora_state: dict) -> bool:
-    """Return whether a legacy state is provably confined to CLIP text layers."""
-    if not lora_state:
-        return False
-    return all(
-        isinstance(key, str)
-        and key.startswith("transformer.")
-        and key.endswith((".lora_A", ".lora_B"))
-        for key in lora_state
-    )
-
-
 def _validate_checkpoint_metadata(metadata: object, lora_state: dict, path: Path) -> dict:
     if not isinstance(metadata, dict):
         raise ValueError(f"LoRA checkpoint metadata must be an object: {path}")
@@ -97,28 +82,16 @@ def _validate_checkpoint_metadata(metadata: object, lora_state: dict, path: Path
         raise ValueError(f"LoRA checkpoint metadata.clip_model is required: {path}")
 
     adapter_scope = metadata.get("adapter_scope")
-    if adapter_scope == _TEXT_ONLY_SCOPE:
-        return metadata
-    if adapter_scope is None and _is_legacy_text_only_state(lora_state):
-        normalized_metadata = dict(metadata)
-        normalized_metadata["adapter_scope"] = _TEXT_ONLY_SCOPE
-        logger.warning(
-            "LoRA checkpoint %s has no adapter_scope; inferred text_only from "
-            "transformer-only LoRA keys.",
-            path,
-        )
-        return normalized_metadata
     if adapter_scope is None:
         raise ValueError(
-            "LoRA checkpoint metadata.adapter_scope is missing and its state is "
-            f"not provably text-only: {path}"
+            f"LoRA checkpoint metadata.adapter_scope is required: {path}"
         )
     if adapter_scope != _TEXT_ONLY_SCOPE:
         raise ValueError(
             "LoRA checkpoint metadata.adapter_scope must be 'text_only': "
             f"{path}"
         )
-    raise AssertionError("unreachable")
+    return metadata
 
 
 def load_lora_weights(model: nn.Module, path: Path) -> dict:
@@ -166,5 +139,4 @@ def load_lora_weights(model: nn.Module, path: Path) -> dict:
             module.lora_A.data.copy_(lora_state[f"{name}.lora_A"].to(module.lora_A))
             module.lora_B.data.copy_(lora_state[f"{name}.lora_B"].to(module.lora_B))
 
-    logger.info("Loaded text-only LoRA checkpoint from %s", path)
     return metadata

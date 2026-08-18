@@ -1,55 +1,112 @@
-# AIC 2026 local retrieval backend
+# AIC 2026 CLIP retrieval consumer
 
-This repository is the **visual retrieval component**. It accepts final English
-CLIP evidence queries from the separate query-planning repository and returns
-ranked keyframe candidates. It does not rewrite Vietnamese, classify tasks,
-answer Q&A, or submit CSV files.
+`aic-model-searching` is a consumer-only local retrieval package. It accepts
+final English CLIP queries from the query-planning repository and searches a
+pre-built, external FAISS artifact bundle. It never creates keyframes,
+metadata, CLIP features, or indexes.
 
 ## Runtime contract
 
 ```text
 final English CLIP query
-  -> CLIP ViT-B/32 text encoder (+ optional text-only LoRA)
-  -> local FAISS video.index
-  -> index_metadata.json
-  -> SearchCandidate(video_id, original frame ID, timestamp, score)
+  -> OpenAI CLIP ViT-B/32 text encoder (+ optional text-only LoRA)
+  -> external FAISS video.index
+  -> external index_metadata.json
+  -> QueryRetrievalResult / SearchCandidate
 ```
 
-There is no Qdrant service in this runtime.
+The calling repository owns Vietnamese query planning, query fusion, temporal
+grouping, QA, TRAKE, refinement, evaluation, and submission output.
 
-## Artifact bundle
+## Artifact bundle supplied by the teammate
 
-Point `AIC_ARTIFACT_DIR` at one complete bundle received from the teammate:
+Set `AIC_ARTIFACT_DIR` to one immutable bundle with this layout:
 
 ```text
-artifact-bundle/
-  video.index
-  index_metadata.json
-  lora_weights.pt              # optional
-  scene.index                  # optional; must have its metadata too
-  scene_metadata.json          # optional
+clip-b32-bundle/
+  artifact_manifest.json       # required
+  video.index                  # required FAISS inner-product index
+  index_metadata.json          # required JSON array, one row per vector
+  lora_weights.pt              # required only when the manifest uses text_only_lora
+  scene.index                  # optional; only with scene_metadata.json
+  scene_metadata.json          # optional; only with scene.index
 ```
 
-`video.index` and `index_metadata.json` are mandatory. Every metadata row must
-have `video_id`, the real submission `frame_id`, and non-negative `pts_time`.
-Keyframe filename or ordinal is not a submission frame ID.
+`artifact_manifest.json` is required so the consumer can reject an
+incompatible bundle before search. A valid minimal manifest is:
 
-Copy `.env.example` to `.env` and configure, for example:
+```json
+{
+  "schema_version": 1,
+  "clip_model": "ViT-B/32",
+  "image_embedding_space": "openai_clip_vit_b32",
+  "embedding_dimension": 512,
+  "metric": "inner_product",
+  "normalized": true,
+  "vector_count": 123456,
+  "text_encoder_adapter": "none"
+}
+```
+
+Use `"text_encoder_adapter": "text_only_lora"` only when the bundle also
+contains the matching `lora_weights.pt` and the consumer is configured with
+`AIC_USE_LORA=true`.
+
+### Non-negotiable bundle constraints
+
+- `video.index` must contain normalized **OpenAI CLIP ViT-B/32 image vectors**
+  in a 512-dimensional inner-product space. A same-sized vector from another
+  encoder, a projection head, or a visual-side LoRA is incompatible.
+- `index_metadata.json` must be a JSON array in exactly the FAISS vector order.
+  Its length must equal `vector_count` and `video.index.ntotal`.
+- Every metadata row must contain non-empty `video_id`, the real original
+  submission `frame_id` (not a keyframe filename/ordinal), and finite,
+  non-negative `pts_time`. `clip_id` and `scene_id` are optional.
+- If scene artifacts are provided, both scene files must be present, their row
+  count must equal the scene index total, and their dimension must equal the
+  keyframe index dimension.
+- A LoRA checkpoint must contain `metadata.clip_model == "ViT-B/32"` and
+  `metadata.adapter_scope == "text_only"`. A visual-side adapter requires a
+  re-encoded image index and is rejected.
+
+Ask the teammate to version the whole bundle together: changing any index,
+metadata file, manifest, CLIP checkpoint family, or enabled LoRA produces a
+new bundle version.
+
+## Environment configuration
+
+Copy `.env.example` to `.env`. Only these variables are supported:
 
 ```env
-AIC_ARTIFACT_DIR=D:/AIC/artifacts/clip-b32-raw-v1
-AIC_CLIP_MODEL_NAME=ViT-B/32
-AIC_USE_LORA=true
+# Required: directory containing the complete bundle above.
+AIC_ARTIFACT_DIR=D:/AIC/artifacts/clip-b32-btc-v1
+
+# Optional: cpu, cuda, or cuda:N. Defaults to CUDA when available, else CPU.
 AIC_DEVICE=cuda
+
+# Optional: true only for a bundle declaring text_only_lora; otherwise false.
+AIC_USE_LORA=false
 ```
 
-This codebase accepts only a LoRA checkpoint that adapts CLIP's **text
-encoder**. Its `metadata` must declare `clip_model: "ViT-B/32"` and
-`adapter_scope: "text_only"`; it is then compatible with raw BTC `ViT-B/32`
-image features. A visual-side LoRA is rejected because it requires a matching
-re-encoded `video.index`.
+`AIC_CLIP_MODEL_NAME`, per-file index paths, BTC data paths, and offline-build
+settings are intentionally unsupported. The model is fixed to `ViT-B/32` and
+bundle filenames are fixed to make compatibility inspectable.
 
-## Call from Python
+## Install and call
+
+Install into the virtual environment of the calling repository:
+
+```powershell
+python -m pip install -e D:\VideoQuery\model_searching
+```
+
+For package development, install test dependencies with:
+
+```powershell
+python -m pip install -e ".[dev]"
+```
+
+Then call the public API:
 
 ```python
 from aic_model_searching import search_clip_queries
@@ -63,51 +120,6 @@ for result in results:
     print(result.query_index, result.query_text, result.candidates[:3])
 ```
 
-Each `QueryRetrievalResult` keeps the query index and its own ranked results,
-so the caller can apply its task-specific RRF, Q&A, or TRAKE logic safely.
-
-## Optional offline index-building tools
-
-Install them only when constructing local visual artifacts:
-
-```bash
-python -m pip install -e ".[offline]"
-python scripts/extract_btc_data.py
-python scripts/import_btc_data.py
-python scripts/build_index_features.py
-```
-
-`import_btc_data.py` preserves the organizer's keyframe-to-original-frame
-mapping. `build_index_features.py` builds the local FAISS keyframe and scene
-indexes from BTC CLIP features. `extract_clip_features.py` is only for the
-case where organizer features are unavailable and you deliberately create your
-own raw CLIP ViT-B/32 features.
-
-The repository deliberately contains no training loop. Training belongs to the
-teammate's training repository; runtime only loads the resulting LoRA
-checkpoint when configured.
-
-This image-only component has no OCR, ASR, caption model, or text index. Dense
-raw-video frame refinement is the next visual-only capability; Q&A answering,
-TRAKE DP, local evaluation, and CSV export belong to the calling repository.
-
-## Install
-
-Install this repository into the virtual environment of the calling repository:
-
-```powershell
-python -m pip install -e D:\VideoQuery\model_searching
-```
-
-Use `-e ".[dev]"` while developing this repository, or `-e ".[offline]"`
-when building visual artifacts locally. The calling repository imports only the
-public API:
-
-For IDEs that expect a `requirements.txt`, select this repository's virtual
-environment and run `python -m pip install -r requirements.txt`. That file
-intentionally forwards to the `dev` and `offline` extras in `pyproject.toml`,
-so dependency versions remain defined in one place.
-
-```python
-from aic_model_searching import search_clip_queries
-```
+Each `QueryRetrievalResult` retains its original query index and ranked
+candidates. The caller can therefore apply task-specific rank fusion without
+losing provenance.

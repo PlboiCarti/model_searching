@@ -22,7 +22,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0"]
-offline = ["tqdm", "opencv-python-headless"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

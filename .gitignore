@@ -1,9 +1,9 @@
 # Environment variables (Credentials)
 .env
 
-# Data and Models
-data/
-ZIP/
+# External artifact bundles and checkpoints
+artifacts/
+index/
 *.pt
 *.index
 *.jsonl
@@ -23,6 +23,6 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 aic_model_searching.egg-info/
-index/
-tests/
+
+# Local reference documents
 *.pdf

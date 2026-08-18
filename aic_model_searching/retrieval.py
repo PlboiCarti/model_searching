@@ -16,10 +16,15 @@ import faiss
 import numpy as np
 
 from aic_model_searching.config import (
+    ARTIFACT_MANIFEST_PATH,
+    ARTIFACT_SCHEMA_VERSION,
+    CLIP_EMBEDDING_DIMENSION,
+    CLIP_MODEL_NAME,
     FAISS_INDEX_PATH,
     FAISS_METADATA_PATH,
     SCENE_FAISS_INDEX_PATH,
     SCENE_METADATA_PATH,
+    USE_LORA,
 )
 from aic_model_searching.embedding.clip_encoder import encode_text
 
@@ -58,6 +63,67 @@ def _load_json_list(path: Path, label: str) -> list[dict[str, Any]]:
     return value
 
 
+def _load_json_object(path: Path, label: str) -> dict[str, Any]:
+    if not path.is_file():
+        raise RetrievalBundleError(f"Missing {label}: {path}")
+    try:
+        with path.open(encoding="utf-8") as stream:
+            value = json.load(stream)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RetrievalBundleError(f"Cannot read {label} at {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise RetrievalBundleError(f"{label} must be a JSON object: {path}")
+    return value
+
+
+def _validate_artifact_manifest(
+    manifest: dict[str, Any],
+    *,
+    index: Any,
+    metadata: list[dict[str, Any]],
+    path: Path,
+) -> None:
+    required_values = {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "clip_model": CLIP_MODEL_NAME,
+        "image_embedding_space": "openai_clip_vit_b32",
+        "embedding_dimension": CLIP_EMBEDDING_DIMENSION,
+        "metric": "inner_product",
+        "normalized": True,
+    }
+    for field, expected in required_values.items():
+        if manifest.get(field) != expected:
+            raise RetrievalBundleError(
+                f"artifact manifest has incompatible {field!r}: "
+                f"expected {expected!r}, got {manifest.get(field)!r}: {path}"
+            )
+
+    vector_count = manifest.get("vector_count")
+    if not isinstance(vector_count, int) or isinstance(vector_count, bool):
+        raise RetrievalBundleError(f"artifact manifest vector_count must be an integer: {path}")
+    if vector_count != index.ntotal or vector_count != len(metadata):
+        raise RetrievalBundleError(
+            "artifact manifest/index/metadata mismatch: "
+            f"manifest={vector_count}, index={index.ntotal}, metadata={len(metadata)}"
+        )
+    if index.d != CLIP_EMBEDDING_DIMENSION:
+        raise RetrievalBundleError(
+            "CLIP index dimension mismatch: "
+            f"index={index.d}, expected={CLIP_EMBEDDING_DIMENSION}"
+        )
+    if index.metric_type != faiss.METRIC_INNER_PRODUCT:
+        raise RetrievalBundleError(
+            "CLIP index metric mismatch: expected FAISS inner product, "
+            f"got metric_type={index.metric_type}"
+        )
+    adapter = manifest.get("text_encoder_adapter")
+    if adapter not in {"none", "text_only_lora"}:
+        raise RetrievalBundleError(
+            "artifact manifest text_encoder_adapter must be 'none' or 'text_only_lora': "
+            f"{path}"
+        )
+
+
 def _validate_keyframe_metadata(rows: list[dict[str, Any]], path: Path) -> None:
     """Reject keyframe artifacts that cannot produce valid AIC candidates."""
     for row_index, item in enumerate(rows):
@@ -86,11 +152,13 @@ class LocalClipRetriever:
         self,
         index_path: Path = FAISS_INDEX_PATH,
         metadata_path: Path = FAISS_METADATA_PATH,
+        manifest_path: Path = ARTIFACT_MANIFEST_PATH,
         scene_index_path: Path = SCENE_FAISS_INDEX_PATH,
         scene_metadata_path: Path = SCENE_METADATA_PATH,
     ) -> None:
         self.index_path = Path(index_path)
         self.metadata_path = Path(metadata_path)
+        self.manifest_path = Path(manifest_path)
         self.scene_index_path = Path(scene_index_path)
         self.scene_metadata_path = Path(scene_metadata_path)
 
@@ -108,6 +176,20 @@ class LocalClipRetriever:
                 f"{self.keyframe_index.ntotal} vectors vs {len(self.metadata)} rows"
             )
         _validate_keyframe_metadata(self.metadata, self.metadata_path)
+        self.manifest = _load_json_object(self.manifest_path, "artifact manifest")
+        _validate_artifact_manifest(
+            self.manifest,
+            index=self.keyframe_index,
+            metadata=self.metadata,
+            path=self.manifest_path,
+        )
+        manifest_uses_lora = self.manifest["text_encoder_adapter"] == "text_only_lora"
+        if manifest_uses_lora != USE_LORA:
+            raise RetrievalBundleError(
+                "LoRA configuration does not match artifact manifest: "
+                f"manifest text_encoder_adapter={self.manifest['text_encoder_adapter']!r}, "
+                f"AIC_USE_LORA={str(USE_LORA).lower()}"
+            )
 
         has_scene_index = self.scene_index_path.is_file()
         has_scene_metadata = self.scene_metadata_path.is_file()
@@ -134,6 +216,11 @@ class LocalClipRetriever:
                 raise RetrievalBundleError(
                     "Scene and keyframe indexes have different embedding dimensions: "
                     f"{self.scene_index.d} vs {self.keyframe_index.d}"
+                )
+            if self.scene_index.metric_type != self.keyframe_index.metric_type:
+                raise RetrievalBundleError(
+                    "Scene and keyframe indexes have different distance metrics: "
+                    f"{self.scene_index.metric_type} vs {self.keyframe_index.metric_type}"
                 )
 
     @classmethod
